@@ -1,8 +1,18 @@
 .PHONY: install test lint verify check lab build
 
-# Install the package + dev dependencies
+# Install the package + dev dependencies (uses .venv on PEP-668 systems)
+PY ?= python3
+VENV := .venv
+
 install:
-	pip install -e ".[dev]"
+	@if [ -d "$(VENV)" ]; then \
+		echo "[*] Installing into existing $(VENV)"; \
+		$(VENV)/bin/pip install -q -e ".[dev]"; \
+	else \
+		echo "[*] Creating $(VENV)"; \
+		$(PY) -m venv $(VENV) && $(VENV)/bin/pip install -q -e ".[dev]"; \
+	fi
+	@echo "[+] Done. Activate with: source $(VENV)/bin/activate  (or run commands via $(VENV)/bin/defihunter)"
 
 # Run the Python test suite
 test:

@@ -30,10 +30,15 @@ Only use DeFi Hunter on protocols you own or have explicit written authorization
 git clone https://github.com/defi-hunter/defi-hunter.git
 cd defi-hunter
 
-# Install
-pip install -e .
+# Install (auto-creates .venv on PEP-668 systems like Kali)
+make install
 
-# Or with dev dependencies
+# Or manually with a virtual environment:
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Or, if you prefer system-wide (not on PEP-668 systems):
 pip install -e ".[dev]"
 ```
 
