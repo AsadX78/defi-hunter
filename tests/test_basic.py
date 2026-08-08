@@ -74,6 +74,9 @@ def test_new_attack_templates_present():
         'liquidation_sandwich',
         'force_send_break',
         'stablecoin_peg_collateral_swap',
+        'cross_function_reentrancy',
+        'arbitrary_delegatecall',
+        'permissionless_mint',
     ]:
         assert get_template(name), f"missing template: {name}"
 

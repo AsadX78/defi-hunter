@@ -43,6 +43,12 @@ class AttackSimulator:
             return self._simulate_forcesend(target)
         elif attack_type == 'peg':
             return self._simulate_peg(target)
+        elif attack_type == 'crossfunc':
+            return self._simulate_crossfunc(target)
+        elif attack_type == 'delegatecall':
+            return self._simulate_delegatecall(target)
+        elif attack_type == 'mint':
+            return self._simulate_mint(target)
         else:
             return {'success': False, 'error': f'Unknown attack type: {attack_type}'}
     
@@ -309,3 +315,54 @@ class AttackSimulator:
                 'description': 'Collateral swap at distorted price lets attacker mint unbacked stablecoin',
             }
         return {'success': False, 'error': 'No collateral swap / vault functions detected'}
+
+    def _simulate_crossfunc(self, target: str) -> Dict:
+        """Simulate cross-function reentrancy (withdraw sends before state update)"""
+        code = run(f'cast code {target} --rpc-url {self.rpc_url} 2>/dev/null')
+        has_withdraw_balance = '5fd8c710' in code  # withdrawBalance()
+        has_transfer = '56a6d9ef' in code  # transferBalance(address,uint256)
+        if has_withdraw_balance and has_transfer:
+            return {
+                'success': True,
+                'steps': [
+                    {'step': 'withdrawBalance() sends before zeroing', 'value': 'reentrant receive() hook'},
+                    {'step': 're-enter transferBalance()', 'value': 'double-credit funds to second account'},
+                ],
+                'profit': 'Withdrawal + transferred balance (value from thin air)',
+                'description': 'Cross-function reentrancy: state updated after the external call in one function, other function unprotected',
+            }
+        return {'success': False, 'error': 'No cross-function reentrancy surface detected'}
+
+    def _simulate_delegatecall(self, target: str) -> Dict:
+        """Simulate arbitrary delegatecall via unauthenticated proxy upgrade"""
+        code = run(f'cast code {target} --rpc-url {self.rpc_url} 2>/dev/null')
+        has_set_impl = 'd784d426' in code  # setImplementation(address)
+        if has_set_impl:
+            return {
+                'success': True,
+                'steps': [
+                    {'step': 'setImplementation(address) found', 'value': 'check access control'},
+                    {'step': 'Point proxy at attacker contract', 'value': 'delegatecall runs in proxy context'},
+                    {'step': 'Steal proxy ETH / overwrite storage', 'value': 'layout collision or balance sweep'},
+                ],
+                'profit': 'Full proxy ETH balance + storage takeover',
+                'description': 'Unauthenticated proxy upgrade allows arbitrary delegatecall',
+            }
+        return {'success': False, 'error': 'No setImplementation / proxy upgrade path detected'}
+
+    def _simulate_mint(self, target: str) -> Dict:
+        """Simulate permissionless mint (missing access control)"""
+        code = run(f'cast code {target} --rpc-url {self.rpc_url} 2>/dev/null')
+        has_mint = '40c10f19' in code  # mint(address,uint256)
+        if has_mint:
+            return {
+                'success': True,
+                'steps': [
+                    {'step': 'public mint(address,uint256) found', 'value': 'call it directly'},
+                    {'step': 'Mint unlimited supply to attacker', 'value': 'dilute holders'},
+                    {'step': 'Dump minted tokens', 'value': 'swap for real assets'},
+                ],
+                'profit': 'Unlimited token supply minted for free',
+                'description': 'Token mint() lacks onlyOwner/minter role check',
+            }
+        return {'success': False, 'error': 'No public mint(address,uint256) detected'}

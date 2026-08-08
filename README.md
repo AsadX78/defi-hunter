@@ -81,6 +81,19 @@ export ALCHEMY_KEY="your_key"
 | `flash_loan_governance` | Governance | CRITICAL | Flash loan voting power |
 | `oracle_manipulation` | AMM | CRITICAL | Spot price oracle manipulation |
 | `reentrancy_attack` | Lending | CRITICAL | External call reentrancy |
+| `bridge_deposit_spoof` | Bridge | CRITICAL | Forged deposit proof mints wrapped tokens |
+| `sandwich_attack` | AMM | HIGH | Front-run + back-run victim swaps |
+| `twap_manipulation` | AMM | HIGH | Time-weighted average price distortion |
+| `flash_loan_reentrancy` | Lending | CRITICAL | Flash loan funds recursive exploit |
+| `withdraw_frontrun` | Vault | HIGH | Mid-transaction rate manipulation + rounding theft |
+| `proxy_initialization` | Proxy | CRITICAL | Uninitialized proxy taken over |
+| `permit_replay` | Token | HIGH | ChainId-less permit replayed cross-chain |
+| `liquidation_sandwich` | Lending | HIGH | Liquidate healthy position for profit |
+| `force_send_break` | Vault | HIGH | Forced ETH send inflates share price |
+| `stablecoin_peg_collateral_swap` | Stablecoin | CRITICAL | Swap collateral at distorted price to mint unbacked stablecoin |
+| `cross_function_reentrancy` | Vault | CRITICAL | Re-enter a second function to double-credit funds |
+| `arbitrary_delegatecall` | Proxy | CRITICAL | Unauthenticated proxy upgrade = full takeover |
+| `permissionless_mint` | Token | HIGH | mint() without access control inflates supply |
 
 ## Architecture
 

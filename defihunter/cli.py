@@ -109,7 +109,7 @@ def simulate(ctx):
     pass
 
 @simulate.command()
-@click.option('--attack', '-a', type=click.Choice(['inflation', 'admin', 'governance', 'oracle', 'reentrancy', 'bridge', 'sandwich', 'twap', 'flashloan', 'withdraw', 'initialize', 'permit', 'liquidation', 'forcesend', 'peg']), required=True)
+@click.option('--attack', '-a', type=click.Choice(['inflation', 'admin', 'governance', 'oracle', 'reentrancy', 'bridge', 'sandwich', 'twap', 'flashloan', 'withdraw', 'initialize', 'permit', 'liquidation', 'forcesend', 'peg', 'crossfunc', 'delegatecall', 'mint']), required=True)
 @click.option('--target', '-t', required=True, help='Target contract address')
 @click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL')
 @click.option('--block', '-b', type=int, help='Fork block number')
@@ -147,7 +147,7 @@ def templates(ctx):
     pass
 
 @templates.command('list')
-@click.option('--type', '-t', type=click.Choice(['vault', 'amm', 'lending', 'bridge', 'governance', 'stablecoin', 'token', 'all']), default='all')
+@click.option('--type', '-t', type=click.Choice(['vault', 'amm', 'lending', 'bridge', 'governance', 'stablecoin', 'token', 'proxy', 'all']), default='all')
 def templates_list(type):
     """List available attack templates"""
     from defihunter.templates import TEMPLATES
