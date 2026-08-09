@@ -92,17 +92,23 @@ def ask_rpc() -> Optional[str]:
         ("Saved", f"Your saved RPC will be used as the default{'' if is_saved else ' (none yet — save one with: defihunter config set-rpc <url>)'}"),
         ("Skip", "Type 'skip' to list addresses without on-chain verification"),
     ], title="RPC Endpoint"))
-    answer = Prompt.ask(
-        f"[step]RPC URL[/] [muted](Enter = {saved_rpc})[/]", default=saved_rpc
-    ).strip()
-    if answer.lower() in ("skip", "s", "none"):
-        return None
-    if answer and answer != saved_rpc:
-        # New custom URL — offer to persist it for future projects.
-        if Confirm.ask("[step]Save this RPC for future hunts?[/]", default=True):
+    while True:
+        answer = Prompt.ask(
+            f"[step]RPC URL[/] [muted](Enter = {saved_rpc})[/]", default=saved_rpc
+        ).strip()
+        if answer.lower() in ("skip", "s", "none"):
+            return None
+        if not answer:
+            return saved_rpc
+        if not config.looks_like_rpc(answer):
+            ui.warn("That doesn't look like an RPC URL (http:// or https://). "
+                    "Try again, or type 'skip' to skip verification.")
+            continue
+        if answer != saved_rpc and Confirm.ask(
+                "[step]Save this RPC for future hunts?[/]", default=True):
             path = config.save_rpc(answer)
             ui.ok(f"Saved RPC to {path} — it will pre-fill next time.")
-    return answer or saved_rpc
+        return answer
 
 
 def ask_check_type() -> str:
@@ -230,8 +236,49 @@ def _run_simulate(contracts: Dict[str, Dict], attacks: List[str], rpc: Optional[
 # ---------------------------------------------------------------------------
 
 
+def _ask_org_repo(org: str) -> bool:
+    """Offer to scan a repo from the protocol's GitHub org (deeper than anchor)."""
+    return Confirm.ask(
+        f"[step]Also scan a repo from github.com/{org}?[/] "
+        "[muted](the anchor is often just the token — "
+        "real contracts usually live in a repo)[/]",
+        default=False,
+    )
+
+
+def _pick_org_repo(org: str) -> Optional[str]:
+    """List the org's repos, let the user pick one. Returns 'org/repo' or None."""
+    repos = github.list_org_repos(org)
+    if not repos:
+        ui.warn(f"Couldn't list repos for {org} (GitHub rate limit?). "
+                "Paste a repo URL manually instead.")
+        return None
+    top = repos[:15]
+    ui.console.print()
+    ui.console.print(ui.summary_panel([
+        (f"{i}. {r['name']}",
+         f"{r['language']} · ★{r['stars']} · updated {r['updated']}"
+         + (f" — {r['description']}" if r["description"] else ""))
+        for i, r in enumerate(top, 1)
+    ], title=f"Repos in {org} (top {len(top)} by recency)"))
+    while True:
+        ans = Prompt.ask(
+            "[step]Pick a repo number[/] [muted](or 'skip')[/]", default="skip"
+        ).strip().lower()
+        if ans in ("skip", "", "n", "no"):
+            return None
+        try:
+            idx = int(ans)
+            if 1 <= idx <= len(top):
+                return top[idx - 1]["name"]
+        except ValueError:
+            pass
+        ui.warn("Enter a number from the list or 'skip'.")
+
+
 def _scan_llama_protocol(source: str, rpc: Optional[str]) -> Dict:
-    """Resolve 'llama:<name>' via DefiLlama and scan the anchor addresses."""
+    """Resolve 'llama:<name>' via DefiLlama, scan the anchor addresses, and
+    optionally go deeper by scanning a repo from the protocol's GitHub org."""
     from defihunter.core import protocols
 
     name = source.split(":", 1)[1].strip()
@@ -247,17 +294,32 @@ def _scan_llama_protocol(source: str, rpc: Optional[str]) -> Dict:
         ui.info(f"Website: {info['url']}")
     if info["chains"]:
         ui.info("Chains: " + ", ".join(info["chains"]))
-    if info["github_orgs"]:
+    orgs = info.get("github_orgs") or []
+    if orgs:
         ui.info("GitHub: " + ", ".join(
-            f"https://github.com/{org}" for org in info["github_orgs"]))
+            f"https://github.com/{org}" for org in orgs))
     if not info["addresses"]:
         raise RuntimeError(
             f"DefiLlama has no on-chain addresses for '{info['name']}'. "
             "Check the protocol's GitHub (above) or paste addresses manually."
         )
     ui.info(f"Anchor address(es): {len(info['addresses'])}")
-    scan = github.scan_addresses(", ".join(info["addresses"]), rpc_url=rpc)
+
+    with ui.spinner(f"Scanning {len(info['addresses'])} anchor address(es)"):
+        scan = github.scan_addresses(", ".join(info["addresses"]), rpc_url=rpc)
     scan["repo_url"] = f"DefiLlama: {info['name']}"
+
+    # Depth: the anchor is often just the token — offer to scan a real repo.
+    if orgs and _ask_org_repo(orgs[0]):
+        repo = _pick_org_repo(orgs[0])
+        if repo:
+            ui.info(f"Also scanning https://github.com/{repo} …")
+            with ui.spinner(f"Scanning {repo}"):
+                deep = github.scan_repo(f"https://github.com/{repo}", rpc_url=rpc)
+            scan["contracts"].update(deep["contracts"])
+            scan["total_addresses"] += deep["total_addresses"]
+            scan["repo_dir"] = f"DefiLlama: {info['name']} + github.com/{repo}"
+            scan["deep_repo"] = repo
     return scan
 
 
@@ -281,17 +343,18 @@ def run_wizard(
 
     # --- scan --------------------------------------------------------------
     ui.rule("EXTRACTING CONTRACTS")
-    with ui.spinner(f"Scanning {repo_url}"):
-        try:
-            if repo_url.startswith("llama:"):
-                scan = _scan_llama_protocol(repo_url, rpc)
-            elif github.is_address_list(repo_url):
+    try:
+        if repo_url.startswith("llama:"):
+            scan = _scan_llama_protocol(repo_url, rpc)
+        elif github.is_address_list(repo_url):
+            with ui.spinner(f"Scanning {repo_url}"):
                 scan = github.scan_addresses(repo_url, rpc_url=rpc)
-            else:
+        else:
+            with ui.spinner(f"Scanning {repo_url}"):
                 scan = github.scan_repo(repo_url, rpc_url=rpc)
-        except RuntimeError as e:
-            ui.error(str(e))
-            return
+    except RuntimeError as e:
+        ui.error(str(e))
+        return
 
     contracts = scan["contracts"]
     if not contracts:
@@ -369,7 +432,7 @@ def run_wizard(
 
     sim_successes = sum(1 for r in sim_results if r.get("success"))
     ui.console.print(ui.summary_panel([
-        ("repo", repo_url),
+        ("repo", scan.get("repo_url", repo_url)),
         ("addresses", str(scan["total_addresses"])),
         ("contracts checked", str(len(contracts))),
         ("static findings", str(len(findings))),

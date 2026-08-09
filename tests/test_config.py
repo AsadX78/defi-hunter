@@ -64,6 +64,27 @@ def test_corrupt_config_is_ignored(isolated_config):
     assert config.get_default_rpc() == config.DEFAULT_RPC
 
 
+def test_default_rpc_ignores_garbage_saved_value(isolated_config):
+    """A junk saved value (e.g. a stray '5') can't poison future hunts."""
+    isolated_config.write_text("default_rpc: '5'\n")
+    assert config.get_default_rpc() == config.DEFAULT_RPC
+
+
+def test_save_rpc_rejects_garbage(isolated_config):
+    """save_rpc refuses non-URL values so mis-typed answers never persist."""
+    with pytest.raises(ValueError):
+        config.save_rpc("5")
+    assert config.get_default_rpc() == config.DEFAULT_RPC
+
+
+def test_looks_like_rpc():
+    assert config.looks_like_rpc("https://eth-mainnet.g.alchemy.com/v2/x")
+    assert config.looks_like_rpc("http://localhost:8545")
+    assert not config.looks_like_rpc("5")
+    assert not config.looks_like_rpc("skip")
+    assert not config.looks_like_rpc("")
+
+
 def test_load_config_legacy_still_works():
     """The original multi-chain config loader is untouched."""
     cfg = config.load_config()

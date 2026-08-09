@@ -109,21 +109,36 @@ def save_local_config(data: Dict[str, Any]) -> Path:
     return path
 
 
+def looks_like_rpc(value: str) -> bool:
+    """True if the string looks like an RPC endpoint (http/https URL)."""
+    return value.strip().lower().startswith(("http://", "https://"))
+
+
 def get_default_rpc() -> str:
     """Best RPC default for the wizard:
-    $DEFIHUNTER_RPC > config.local.yaml `default_rpc` > built-in default."""
+    $DEFIHUNTER_RPC > config `default_rpc` (if URL-like) > built-in default.
+
+    Garbage values (e.g. a stray '5' typed into the prompt and saved) are
+    ignored so they can't silently break every hunt in a directory.
+    """
     env_rpc = os.getenv("DEFIHUNTER_RPC")
-    if env_rpc:
+    if env_rpc and looks_like_rpc(env_rpc):
         return env_rpc.strip()
     cfg = load_local_config()
     rpc = cfg.get("default_rpc")
-    if isinstance(rpc, str) and rpc.strip():
+    if isinstance(rpc, str) and looks_like_rpc(rpc):
         return rpc.strip()
     return DEFAULT_RPC
 
 
 def save_rpc(url: str) -> Path:
-    """Persist an RPC URL for future hunts. Returns the config path written."""
+    """Persist an RPC URL for future hunts. Returns the config path written.
+
+    Raises ValueError for values that don't look like an RPC URL, so a
+    mis-typed prompt answer can never poison the saved config.
+    """
+    if not looks_like_rpc(url):
+        raise ValueError(f"Not a valid RPC URL: {url!r}")
     return save_local_config({"default_rpc": url.strip()})
 
 

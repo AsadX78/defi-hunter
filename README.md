@@ -62,13 +62,15 @@ A local folder also works as the "repo" for testing repos that aren't public.
 
 Three ways to hunt a protocol that has no public repo:
 
-1. **Just a protocol name?** Let DefiLlama find the addresses (v1.4):
+1. **Just a protocol name?** Let DefiLlama find the addresses (v1.3.4):
    ```bash
    defihunter wizard -r llama:spark -c both
    ```
    Or type the name straight into the wizard prompt (`spark`, `aave`, `lido`…).
    It resolves the anchor contract(s), website, chains, and GitHub org, then
-   runs the normal flow.
+   runs the normal flow. The anchor is often just the token — the wizard will
+   offer to go deeper by scanning a repo from the protocol's GitHub org
+   (v1.3.5).
 
 2. **Paste 0x addresses directly** — skip the repo entirely:
    ```bash

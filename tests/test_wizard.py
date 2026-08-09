@@ -135,3 +135,143 @@ def test_bare_cli_boots_wizard(fake_repo: Path):
     assert result.exit_code == 0, result.output
     assert "GitHub repo URL" in result.output or "Protocol source" in result.output
     assert "Hunt Complete" in result.output
+
+
+# --- GitHub org repo listing (llama depth step) -----------------------------
+
+
+class DummyConfirm:
+    answer = False
+
+    @classmethod
+    def ask(cls, *args, **kwargs):
+        return cls.answer
+
+
+class DummyPrompt:
+    answer = "skip"
+
+    @classmethod
+    def ask(cls, *args, **kwargs):
+        return cls.answer
+
+
+class FakeResp:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise github.requests.RequestException(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+def _repo(full_name: str, **kw):
+    base = {
+        "full_name": full_name, "name": full_name.split("/")[-1],
+        "fork": False, "archived": False, "description": "",
+        "updated_at": "2026-08-01T00:00:00Z", "stargazers_count": 0,
+        "language": "Solidity",
+    }
+    base.update(kw)
+    return base
+
+
+def test_list_org_repos_filters_forks_and_archived(monkeypatch):
+    payload = [
+        _repo("Layr-Labs/eigenlayer-contracts", stargazers_count=120),
+        _repo("Layr-Labs/eigenlayer-middleware", fork=True),
+        _repo("Layr-Labs/old-tooling", archived=True),
+        _repo("Layr-Labs/docs", language="Markdown"),
+    ]
+    monkeypatch.setattr(github.requests, "get", lambda url, timeout=30: FakeResp(payload))
+    repos = github.list_org_repos("Layr-Labs")
+    names = [r["name"] for r in repos]
+    assert "Layr-Labs/eigenlayer-contracts" in names
+    assert "Layr-Labs/docs" in names
+    assert not any("middleware" in n or "old-tooling" in n for n in names)
+    assert repos[0]["stars"] == 120
+    assert repos[0]["updated"] == "2026-08-01"
+
+
+def test_list_org_repos_network_failure_returns_empty(monkeypatch):
+    def boom(url, timeout=30):
+        raise github.requests.RequestException("boom")
+
+    monkeypatch.setattr(github.requests, "get", boom)
+    assert github.list_org_repos("Layr-Labs", attempts=2) == []
+
+
+def test_llama_scan_sets_friendly_label(monkeypatch):
+    """Llama runs label the repo as 'DefiLlama: <name>', not the raw prefix."""
+    from defihunter import wizard
+    from defihunter.core import protocols
+
+    monkeypatch.setattr(protocols, "resolve_protocol", lambda name: {
+        "name": "Spark", "url": "https://spark.finance/", "chains": ["Ethereum"],
+        "github_orgs": [],
+        "addresses": ["0xc20059e0317de91738d13af027dfc4a50781b066"],
+    })
+    monkeypatch.setattr(wizard.github, "scan_addresses",
+                        lambda src, rpc_url=None: {
+                            "contracts": {"0xc20059e0317de91738d13af027dfc4a50781b066": {"verified": True}},
+                            "total_addresses": 1, "repo_dir": "(addresses)"})
+    scan = wizard._scan_llama_protocol("llama:spark", rpc=None)
+    assert scan["repo_url"] == "DefiLlama: Spark"
+    assert "deep_repo" not in scan  # no orgs -> no depth prompt
+
+
+def test_llama_scan_skips_org_repo_when_declined(monkeypatch):
+    from defihunter import wizard
+    from defihunter.core import protocols
+
+    monkeypatch.setattr(protocols, "resolve_protocol", lambda name: {
+        "name": "EigenCloud", "url": "", "chains": ["Ethereum"],
+        "github_orgs": ["Layr-Labs"],
+        "addresses": ["0xec53bf9167f50cdeb3ae105f56099aaab9061f83"],
+    })
+    monkeypatch.setattr(wizard.github, "scan_addresses",
+                        lambda src, rpc_url=None: {
+                            "contracts": {"0xec53bf9167f50cdeb3ae105f56099aaab9061f83": {"verified": True}},
+                            "total_addresses": 1, "repo_dir": "(addresses)"})
+    DummyConfirm.answer = False
+    monkeypatch.setattr(wizard, "Confirm", DummyConfirm)
+    scan = wizard._scan_llama_protocol("llama:eigenlayer", rpc=None)
+    assert "deep_repo" not in scan
+    assert scan["repo_url"] == "DefiLlama: EigenCloud"
+
+
+def test_llama_scan_merges_org_repo_when_picked(monkeypatch):
+    from defihunter import wizard
+    from defihunter.core import protocols
+
+    monkeypatch.setattr(protocols, "resolve_protocol", lambda name: {
+        "name": "EigenCloud", "url": "", "chains": ["Ethereum"],
+        "github_orgs": ["Layr-Labs"],
+        "addresses": ["0xec53bf9167f50cdeb3ae105f56099aaab9061f83"],
+    })
+    monkeypatch.setattr(wizard.github, "scan_addresses",
+                        lambda src, rpc_url=None: {
+                            "contracts": {"0xec53bf9167f50cdeb3ae105f56099aaab9061f83": {"verified": True}},
+                            "total_addresses": 1, "repo_dir": "(addresses)"})
+    monkeypatch.setattr(wizard.github, "list_org_repos",
+                        lambda org, attempts=3, timeout=30: [
+                            {"name": "Layr-Labs/eigenlayer-contracts",
+                             "description": "core", "updated": "2026-08-01",
+                             "stars": 100, "language": "Solidity"},
+                        ])
+    monkeypatch.setattr(wizard.github, "scan_repo", lambda url, rpc_url=None: {
+        "contracts": {"0x39053d51b77dc0d36036fc1fcc8cb819df8ef37a": {"verified": True}},
+        "total_addresses": 1, "repo_dir": "/tmp/x"})
+    DummyConfirm.answer = True
+    DummyPrompt.answer = "1"
+    monkeypatch.setattr(wizard, "Confirm", DummyConfirm)
+    monkeypatch.setattr(wizard, "Prompt", DummyPrompt)
+    scan = wizard._scan_llama_protocol("llama:eigenlayer", rpc=None)
+    assert scan["deep_repo"] == "Layr-Labs/eigenlayer-contracts"
+    assert scan["total_addresses"] == 2  # anchor + repo's contracts merged
+    assert "0x39053d51b77dc0d36036fc1fcc8cb819df8ef37a" in scan["contracts"]
+    assert "Layr-Labs" in scan["repo_dir"]

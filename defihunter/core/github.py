@@ -12,6 +12,8 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import requests
+
 from defihunter.core.recon import ReconScanner
 
 ADDR_RE = re.compile(r"0x[a-fA-F0-9]{40}")
@@ -96,6 +98,38 @@ def parse_address_list(value: str) -> List[str]:
         for t in re.split(r"[,\s]+", value.strip())
         if t.strip()
     ]
+
+
+def list_org_repos(org: str, attempts: int = 3, timeout: int = 30) -> List[Dict[str, object]]:
+    """List a GitHub org's non-fork, non-archived repos, newest-updated first.
+
+    Used by the llama flow to go deeper than the anchor address (which is
+    often just the protocol's token — the real contracts live in a repo).
+    Returns [] on rate-limit / network failure so callers degrade gracefully.
+    """
+    url = (f"https://api.github.com/orgs/{org}/repos"
+           "?per_page=100&sort=updated&direction=desc")
+    data = []
+    for _ in range(attempts):
+        try:
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except requests.RequestException:
+            continue
+    repos = []
+    for r in data:
+        if r.get("fork") or r.get("archived"):
+            continue
+        repos.append({
+            "name": r.get("full_name") or r.get("name", ""),
+            "description": (r.get("description") or "")[:120],
+            "updated": (r.get("updated_at") or "")[:10],
+            "stars": r.get("stargazers_count") or 0,
+            "language": r.get("language") or "",
+        })
+    return repos
 
 
 def clone(repo_url: str) -> Path:

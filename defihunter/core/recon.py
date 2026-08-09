@@ -1,6 +1,7 @@
 """Reconnaissance module — discover contracts and map attack surface"""
 import re
 import subprocess
+import time
 from typing import Dict, List, Optional, Set
 from pathlib import Path
 
@@ -88,16 +89,24 @@ class ReconScanner:
                 }
         return contracts
 
-    def _code_with_retry(self, addr: str, attempts: int = 3) -> str:
+    def _code_with_retry(self, addr: str, attempts: int = 3, backoff: float = 1.0) -> str:
         """eth_getCode via `cast code`, retrying on transient network/DNS
-        failures so flaky RPCs don't turn real contracts into 'no code'."""
-        for _ in range(attempts):
+        failures so flaky RPCs don't turn real contracts into 'no code'.
+
+        - a clean "0x" answer means "no code here" and stops immediately
+        - an empty/errored result is a transient failure → backoff + retry
+        """
+        for i in range(attempts):
             try:
                 code = run(f'cast code {addr} --rpc-url {self.rpc_url} 2>/dev/null')
             except Exception:
-                code = ""
+                code = ""  # subprocess timeout etc. — retryable
             if code and code != "0x" and len(code) > 10:
                 return code
+            if code == "0x":
+                return ""  # definitive: address has no code
+            if i < attempts - 1:
+                time.sleep(backoff * (i + 1))  # 1s, 2s, 3s between retries
         return ""
     
     def get_contract_functions(self, address: str) -> List[str]:
