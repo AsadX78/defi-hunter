@@ -295,10 +295,15 @@ def _pick_org_repo(org: str) -> Optional[str]:
         ui.warn(f"Couldn't list repos for {org}. {_rate_limit_hint()}")
         return None
     # Auto-detect which repos hold the deployed contract addresses, so the
-    # user doesn't have to guess from names/descriptions.
+    # user doesn't have to guess from names/descriptions. Source-code repos
+    # (Solidity/Vyper) sort first — the codebase IS the attack surface for a
+    # security hunt, even when a deployer tool matches more tree signals.
     with ui.spinner(f"Scanning {len(repos[:15])} repos for deployed addresses…"):
         scores = github.detect_ca_repos(repos)
-    top = sorted(repos[:15], key=lambda r: -scores.get(r["name"], 0))
+    top = sorted(
+        repos[:15],
+        key=lambda r: (not github.is_source_repo(r), -scores.get(r["name"], 0)),
+    )
     ca_count = sum(1 for r in top if scores.get(r["name"], 0) >= 4)
     ui.console.print()
     ui.console.print(ui.summary_panel([

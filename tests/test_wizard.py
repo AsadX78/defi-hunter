@@ -595,3 +595,41 @@ def test_repo_score_includes_source_bonus(monkeypatch):
     assert contracts[1] > zeus[1]
     assert zeus[1] == 3
     assert contracts[1] == 4
+
+
+def test_is_source_repo():
+    """Solidity/Vyper (or source-named) repos are flagged as source."""
+    from defihunter.core.github import is_source_repo
+    assert is_source_repo({"name": "Layr-Labs/eigenlayer-contracts", "language": "Solidity"})
+    assert is_source_repo({"name": "protocol-core", "language": "TypeScript"})  # name hint
+    assert not is_source_repo({"name": "Layr-Labs/zeus", "language": "TypeScript"})
+    assert not is_source_repo({"name": "docs", "language": "HTML"})
+
+
+def test_pick_org_repo_ranks_source_first_even_when_scoring_lower(monkeypatch):
+    """A deployer tool with a higher CA score must NOT outrank the source repo.
+
+    Real data showed zeus scoring 26 vs eigenlayer-contracts 18 — the wizard
+    must still offer the canonical source repo first.
+    """
+    from defihunter import wizard
+
+    def fake_list_repos(org, attempts=3, timeout=30):
+        return [
+            {"name": "Layr-Labs/eigenlayer-contracts", "description": "EigenLayer core contracts",
+             "updated": "2026-08-01", "stars": 720, "language": "Solidity", "default_branch": "main"},
+            {"name": "Layr-Labs/zeus", "description": "Deployer tooling",
+             "updated": "2026-08-02", "stars": 300, "language": "TypeScript", "default_branch": "main"},
+        ]
+
+    def fake_detect(repos):
+        # tree scoring noise: the deployer tool scores way higher
+        return {"Layr-Labs/zeus": 26, "Layr-Labs/eigenlayer-contracts": 18}
+
+    monkeypatch.setattr(wizard.github, "list_org_repos", fake_list_repos)
+    monkeypatch.setattr(wizard.github, "detect_ca_repos", fake_detect)
+    DummyPrompt.answer = "1"
+    monkeypatch.setattr(wizard, "Prompt", DummyPrompt)
+
+    picked = wizard._pick_org_repo("Layr-Labs")
+    assert picked == "Layr-Labs/eigenlayer-contracts"  # source first, not zeus

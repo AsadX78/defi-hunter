@@ -222,6 +222,17 @@ def source_code_bonus(repo: Dict[str, object]) -> int:
     return 0
 
 
+def is_source_repo(repo: Dict[str, object]) -> bool:
+    """True if the repo is contract source code (Solidity/Vyper or a
+    source-y name like 'protocol-core'/'eigenlayer-contracts').
+
+    The wizard sorts source repos FIRST, then by CA score — a deployer tool
+    can rack up tree-score points from deployment configs and still lose to
+    the actual codebase, which is what a security hunt wants.
+    """
+    return source_code_bonus(repo) > 0
+
+
 def score_repo_for_ca(paths: List[str], readme: str = "") -> int:
     """Score how likely a repo is to contain deployed contract addresses.
 
