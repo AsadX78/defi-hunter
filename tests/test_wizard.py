@@ -908,3 +908,28 @@ class TestWalletResolution:
             "0x2222222222222222222222222222222222222222", None, no_fork=False)
         assert a == "0x2222222222222222222222222222222222222222"
         assert p == "0x4444444444444444444444444444444444444444"
+
+
+class TestWizardWalletTiming:
+    def test_wizard_resolves_wallets_at_start_before_scan(self, monkeypatch):
+        """The wallet question must come at the BEGINNING of the wizard
+        session (right after RPC), before any contract scanning."""
+        from defihunter import wizard
+        calls = []
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(wizard, "ask_rpc", lambda: "https://example.com/rpc")
+
+        def _rw(attacker=None, profit_wallet=None, no_fork=False):
+            calls.append("wallets")
+            return attacker, profit_wallet
+
+        monkeypatch.setattr(wizard, "resolve_wallets", _rw)
+        # scanning blows up immediately — if wallets resolved AFTER it, the
+        # test would fail (calls would be empty on return)
+        def _boom(*a, **k):
+            raise RuntimeError("stop after wallet step")
+
+        monkeypatch.setattr(wizard.github, "scan_repo", _boom)
+        monkeypatch.setattr(wizard.ui, "error", lambda *a, **k: None)
+        wizard.run_wizard(repo_url="some-repo", check="static")
+        assert calls == ["wallets"], f"expected wallet resolution first, got {calls}"

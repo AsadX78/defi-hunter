@@ -680,6 +680,9 @@ def run_wizard(
     # --- 2. RPC ------------------------------------------------------------
     rpc = ask_rpc()
 
+    # --- 3. Wallets (beginning of session — same as `scan`) ----------------
+    attacker, profit_wallet = resolve_wallets(attacker, profit_wallet)
+
     # --- scan --------------------------------------------------------------
     ui.rule("EXTRACTING CONTRACTS")
     try:
@@ -763,7 +766,6 @@ def run_wizard(
     if check in ("static", "both"):
         findings = _run_static(scan, contracts, rpc=rpc)
         if findings and not os.environ.get("DEFIHUNTER_SKIP_FORK"):
-            attacker, profit_wallet = resolve_wallets(attacker, profit_wallet)
             fork_results = _run_fork_verify(findings, contracts, rpc=rpc,
                                             repo_dir=scan.get("repo_dir"),
                                             attacker=attacker,
