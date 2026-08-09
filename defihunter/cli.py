@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.24"
+__version__ = "1.3.25"
 
 
 def _banner():
@@ -279,6 +279,118 @@ def repo(ctx, target, rpc, as_json, no_fork):
         ("findings", str(len(findings))),
         ("fork-verified", f"{len(fork_results)} run, {fork_ok} exploitable"),
     ], level=ui.threat_level(all_findings, analyzed=True))
+
+
+@cli.command()
+@click.option('--target', '-t', required=True,
+              help='Contract address (0x…) or GitHub repo URL')
+@click.option('--rpc', '-r', envvar='RPC_URL', help='Mainnet RPC URL for fork verification')
+@click.option('--output', '-o', default='defihunter-scan.json',
+              help='JSON report path (default defihunter-scan.json)')
+@click.option('--no-fork', is_flag=True, help='Skip fork verification')
+@click.option('--fail-on', type=click.Choice(['none', 'high', 'critical']),
+              default='high', show_default=True,
+              help='Exit code threshold: none=never fail, high=fail on any '
+                   'CONFIRMED high/critical, critical=fail only on CONFIRMED critical')
+def scan(target, rpc, output, no_fork, fail_on):
+    """CI-friendly one-shot scan: static analysis + ABI-aware fork proof.
+
+    Every finding gets a verdict after fork verification:
+      CONFIRMED  — an arbitrary account actually executed the function on a
+                   live mainnet fork and the state changed (evidence shown)
+      REFUTED    — the function exists (from the real ABI) but every call
+                   reverted → NOT callable, removed from the confirmed set
+      UNVERIFIED — no ABI/address to prove either way (stays as static only)
+
+    Exits 0 when no confirmed finding meets --fail-on, 1 otherwise. JSON
+    report written to --output. This is the command to wire into CI.
+    """
+    from defihunter.core.analyzer import analyze_repo_dir
+    from defihunter.core.github import clone, extract_addresses
+    from defihunter.wizard import _run_fork_verify
+    from datetime import datetime as _dt
+
+    ui.rule("SCAN")
+    ui.step("Target", target)
+
+    # 1) static analysis: address scan or repo scan
+    is_addr = target.lower().startswith("0x")
+    findings = []
+    repo_dir = None
+    contracts: dict = {}
+    if is_addr:
+        ui.info("Target is an address — fetching verified source + ABI from Etherscan")
+        analyzer = ContractAnalyzer(rpc_url=rpc)
+        with ui.spinner("Fetching + analyzing verified source"):
+            findings = analyzer.analyze(target)
+        if not findings:
+            ui.ok("No findings in source.")
+        else:
+            ui.console.print(ui.findings_table(findings))
+    else:
+        with ui.spinner("Cloning repo"):
+            repo_dir = clone(target)
+        ui.info(f"Cloned to {repo_dir}")
+        with ui.spinner("Scanning Solidity source"):
+            findings = analyze_repo_dir(str(repo_dir), repo_label=target)
+        ui.info(f"Analyzed {len({f['file'] for f in findings})} source file(s) "
+                f"({len(findings)} finding(s))")
+        contracts = {addr: info for addr, info
+                     in extract_addresses(Path(repo_dir)).items()}
+        if findings:
+            ui.console.print(ui.findings_table(findings))
+
+    # 2) ABI-aware fork verification (self-correcting verdicts)
+    fork_results = []
+    if findings and not no_fork:
+        if is_addr:
+            contracts = {target: {"address": target, "sources": []}}
+        fork_results = _run_fork_verify(findings, contracts, rpc, repo_dir=repo_dir)
+
+    # 3) verdicts: CONFIRMED → real; REFUTED → drop from confirmed set;
+    #    UNVERIFIED stays as static-only
+    confirmed = [r for r in fork_results if r.get("verdict") == "CONFIRMED"]
+    refuted = [r for r in fork_results if r.get("verdict") == "REFUTED"]
+    report = {
+        "tool": "defihunter",
+        "version": __version__,
+        "generated_at": _dt.utcnow().isoformat() + "Z",
+        "target": target,
+        "static_findings": findings,
+        "fork_proofs": fork_results,
+        "verdicts": {
+            "confirmed": len(confirmed),
+            "refuted": len(refuted),
+            "unverified": sum(1 for r in fork_results
+                              if r.get("verdict") == "UNVERIFIED"),
+        },
+        "summary": {
+            "static": len(findings),
+            "fork_confirmed": len(confirmed),
+            "fork_refuted": len(refuted),
+        },
+    }
+    Path(output).write_text(json.dumps(report, indent=2))
+    ui.ok(f"Report written: {output}")
+
+    if not fork_results:
+        ui.info("No fork verification ran (--no-fork, no RPC, or no attack "
+                "routes) — static findings only, not self-corrected.")
+
+    # 4) exit code for CI: fail on CONFIRMED findings meeting the threshold
+    if fail_on != "none" and confirmed:
+        threshold = "CRITICAL" if fail_on == "critical" else "HIGH"
+        bad = [r for r in confirmed
+               if (r.get("source_finding") or {}).get("severity")
+               in ("HIGH", "CRITICAL")
+               and (r.get("source_finding") or {}).get("severity")
+               in (threshold, "CRITICAL")]
+        if bad:
+            ui.warn(f"{len(bad)} CONFIRMED {threshold}+ fork-proof(s) — "
+                    f"exit code 1 (--fail-on={fail_on})")
+            raise SystemExit(1)
+    ui.ok(f"Scan complete: {len(confirmed)} confirmed, {len(refuted)} refuted "
+          f"— exit 0")
 
 
 @cli.command()

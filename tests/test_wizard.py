@@ -807,12 +807,14 @@ class TestForkVerifyDeploymentResolution:
             why_not = ""
             def __enter__(self): return self
             def __exit__(self, *a): return False
-            def run(self, attack, target, source_finding=None):
+            def run(self, attack, target, source_finding=None, abi=None):
                 called.append(target)
                 return {"success": True, "attack": attack, "target": target,
+                        "verdict": "CONFIRMED",
                         "source_finding": source_finding}
 
         monkeypatch.setattr(wizard, "ForkSimulator", lambda rpc_url=None: FakeFork())
+        monkeypatch.setattr(wizard.abi_util, "fetch_abi", lambda addr: [])
         from rich.console import Console
         import io
         monkeypatch.setattr(wizard.ui, "console",

@@ -65,8 +65,8 @@ _KNOWN_PUBLIC_64HEX = {
 
 
 def _is_public_literal(line: str) -> bool:
-    """True if the line's 64-hex literal is a documented constant (proxy slot
-    or padded function selector), not a leaked private key."""
+    """True if the line's 64-hex literal is a documented constant (proxy slot,
+    padded function selector, or bitmask), not a leaked private key."""
     for m in re.finditer(r"\b(?:0x)?[0-9a-fA-F]{64}\b", line):
         hx = m.group(0)
         if hx.lower().startswith("0x"):
@@ -76,6 +76,8 @@ def _is_public_literal(line: str) -> bool:
             return True
         if re.fullmatch(r"[0-9a-fA-F]{8}0{48,}", hx):
             return True  # 4-byte selector zero-padded to 32 bytes
+        if hx.count("f") >= 56 or hx.count("0") == 64:
+            return True  # bitmask (e.g. 0x7fff…ff UPPER_BIT_MASK) or zero value
     return False
 
 

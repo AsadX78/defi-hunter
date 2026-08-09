@@ -23,6 +23,7 @@ from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
 from defihunter import ui
+from defihunter.core import abi as abi_util
 from defihunter.core import config, github
 from defihunter.core.analyzer import ContractAnalyzer, analyze_repo_dir
 from defihunter.core.reporter import ReportGenerator
@@ -362,13 +363,18 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
                 return results
             ui.info(f"Anvil fork live on {fork.rpc_url} — verifying {len(resolved)} finding→address hit(s)")
             for f, addr in resolved:
-                res = fork.run(f["attack"], addr, source_finding=f)
+                abi = abi_util.fetch_abi(addr) or None
+                res = fork.run(f["attack"], addr, source_finding=f, abi=abi)
                 results.append(res)
     ui.console.print(ui.attack_flow(findings, results))
     ok = sum(1 for r in results if r.get("success"))
+    refuted = sum(1 for r in results if r.get("verdict") == "REFUTED")
     if ok:
         ui.warn(f"{ok} finding(s) CONFIRMED callable by an arbitrary account — "
                 "these are real attack surfaces, not heuristics.")
+    if refuted:
+        ui.info(f"{refuted} finding(s) REFUTED on the fork (function exists but "
+                "every call reverted) — dropped from the confirmed set.")
     return results
 
 

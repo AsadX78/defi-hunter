@@ -143,6 +143,19 @@ class TestAnalyzeFile:
         assert not any("64-hex" in x["title"] for x in f)
         assert not any("private key" in x["title"].lower() for x in f)
 
+    def test_bitmask_is_not_secret(self, tmp_path):
+        """0x7fff…ff UPPER_BIT_MASK (found in Uniswap Permit2) is a bitmask
+        constant — 63 f's is not a private key (keys are uniformly random)."""
+        p = _write(tmp_path, "Mask.sol", """
+            contract Mask {
+                bytes32 constant UPPER_BIT_MASK =
+                    (0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff);
+            }
+        """)
+        f = analyze_file(p)
+        assert not any("64-hex" in x["title"] for x in f)
+        assert not any("private key" in x["title"].lower() for x in f)
+
     def test_spot_oracle_medium(self, tmp_path):
         p = _write(tmp_path, "Feed.sol", """
             contract Feed {
@@ -701,11 +714,13 @@ class TestForkVerifyAddressFindings:
             why_not = ""
             def __enter__(self): return self
             def __exit__(self, *a): return False
-            def run(self, attack, target, source_finding=None):
+            def run(self, attack, target, source_finding=None, abi=None):
                 called.append((attack, target))
                 return {"success": True, "attack": attack, "target": target,
+                        "verdict": "CONFIRMED",
                         "source_finding": source_finding}
         monkeypatch.setattr(wizard, "ForkSimulator", lambda rpc_url=None: FakeFork())
+        monkeypatch.setattr(wizard.abi_util, "fetch_abi", lambda addr: [])
         from rich.console import Console
         monkeypatch.setattr(wizard.ui, "console",
                             Console(file=__import__("io").StringIO(),
