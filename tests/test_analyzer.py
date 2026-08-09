@@ -377,3 +377,52 @@ class TestInconclusiveVerdict:
                 console.print(panel)
             # rendered lines must be well under the 160-col console width
             assert max(len(line) for line in cap.get().splitlines()) < 120
+
+
+class TestInterfaceSkip:
+    """Interfaces are declarations only — no bodies to attack, no findings."""
+
+    def test_interface_dir_skipped(self, tmp_path):
+        from pathlib import Path as P
+        d = tmp_path / "contracts" / "interfaces"
+        d.mkdir(parents=True)
+        p = d / "IAVSDirectory.sol"
+        p.write_text("""// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.12;
+interface IAVSDirectory {
+    function initialize(address initialOwner) external;
+    function mint(address to, uint256 amount) external;
+}
+""")
+        assert analyze_file(p) == []
+
+    def test_capital_i_filename_skipped(self, tmp_path):
+        p = _write(tmp_path, "IStrategyManager.sol", """
+            interface IStrategyManager {
+                function initialize(address owner) external;
+                function mint(address to, uint256 amount) external;
+            }
+        """)
+        assert analyze_file(p) == []
+
+    def test_impl_file_still_flagged(self, tmp_path):
+        p = _write(tmp_path, "StrategyManager.sol", """
+            contract StrategyManager {
+                function initialize(address owner) external {
+                    owner_ = owner;
+                }
+                function mint(address to, uint256 amount) external { _mint(to, amount); }
+            }
+        """)
+        f = analyze_file(p)
+        assert any(x["attack"] == "mint" for x in f)
+        assert any(x["attack"] == "initialize" for x in f)
+
+    def test_interface_helper(self):
+        from defihunter.core.analyzer import _is_interface
+        assert _is_interface("/tmp/x/src/contracts/interfaces/IStrategyManager.sol")
+        assert _is_interface("/tmp/x/IEigen.sol")
+        assert _is_interface("/tmp/x/IERC20.sol")
+        assert not _is_interface("/tmp/x/StrategyManager.sol")
+        assert not _is_interface("/tmp/x/Index.sol")      # I + lowercase is a name, not interface
+        assert not _is_interface("/tmp/x/Inflation.sol")

@@ -71,6 +71,19 @@ def _is_guarded(ctx: str) -> bool:
         ctx))
 
 
+def _is_interface(rel: str) -> bool:
+    """True for pure interface files — declarations only, no bodies to attack.
+
+    Two conventions: an `interfaces/` directory, or a PascalCase file name
+    starting with `I` (IStrategyManager.sol, IERC20.sol). Reporting HIGH
+    findings on these is a false positive — an interface cannot implement
+    anything, so there is nothing to exploit.
+    """
+    if "/interfaces/" in f"/{rel}":
+        return True
+    return bool(re.match(r"^I[A-Z][A-Za-z0-9]*\.sol$", Path(rel).name))
+
+
 def analyze_file(path: Path) -> List[Dict]:
     """Line-aware vulnerability scan of one Solidity file."""
     rel = str(path)
@@ -78,6 +91,8 @@ def analyze_file(path: Path) -> List[Dict]:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
+    if _is_interface(rel):
+        return []  # declarations only — pattern findings would be false positives
     lines = text.splitlines()
     findings: List[Dict] = []
     add = lambda sev, title, attack, line, desc: findings.append({
