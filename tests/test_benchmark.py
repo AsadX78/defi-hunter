@@ -15,8 +15,13 @@ def test_benchmark_detects_all_historical_exploits():
             assert r["detected"], f"{r['id']} not detected: missed={r['missed']}"
     # the clean vault must produce zero HIGH/CRITICAL findings
     assert by_id["control-clean-vault"]["detected"]
+    # public constants (EIP-1967 slots, padded selectors) must NOT be flagged
+    assert by_id["control-public-constants"]["detected"], (
+        "public-constants control failed: " +
+        str([f["title"] for f in by_id["control-public-constants"]["findings"]
+             if f.get("severity") in ("CRITICAL", "HIGH")]))
     s = summarize(results)
-    assert s["detected"] == s["total"] == 11
+    assert s["detected"] == s["total"] == 12
     assert s["false_positives"] == 0
 
 

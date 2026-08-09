@@ -307,8 +307,10 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
                                          "reentrancy", "arbitrarycall",
                                          "approve", "selfdestruct")]
     if not verifiable:
-        ui.info("No callable-by-anyone findings (mint/initialize/delegatecall/…)"
-                " to fork-verify.")
+        ui.info("No fork-verifiable findings: every finding needs a callable-"
+                "by-anyone attack route (mint/initialize/delegatecall/"
+                "reentrancy/…) on a known address. Run a repo scan or scan "
+                "verified source to get provable routes.")
         return []
 
     # 1) file (repo-relative) -> deployed addresses that mention it in source
@@ -327,6 +329,13 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
 
     resolved = []
     for f in verifiable:
+        # 0) address-scan findings already KNOW their live address — prove
+        #    them straight away, no repo mapping needed
+        faddrs = [f["address"]] if f.get("address") else []
+        if faddrs:
+            for a in faddrs:
+                resolved.append((f, a.lower()))
+            continue
         fname = str(f.get("file", ""))
         addrs = sorted(set(by_file.get(fname, [])))
         norm = github._norm_name(Path(fname).stem)
@@ -382,19 +391,22 @@ def _run_simulate(contracts: Dict[str, Dict], attacks: List[str], rpc: Optional[
     ok_count = sum(1 for r in results if r.get("success"))
     if ok_count:
         ui.warn(f"{ok_count} attack(s) succeeded — investigate these:")
-    # compact results table
+    # compact results table: only signal, no 36-row failure grid
     from rich.table import Table
     from rich import box as rich_box
-    t = Table(title="Simulation Results", box=rich_box.ROUNDED, border_style="magenta",
-              header_style="bold magenta")
-    t.add_column("Attack", style="bold white")
-    t.add_column("Address", style="addr", no_wrap=True)
-    t.add_column("Result", style="bold")
-    for r in results:
-        result_txt = "SUCCESS ✔" if r.get("success") else "failed"
-        style = "success" if r.get("success") else "muted"
-        t.add_row(r["attack"], r["address"], f"[{style}]{result_txt}[/]")
-    ui.console.print(t)
+    hits = [r for r in results if r.get("success")]
+    if hits:
+        t = Table(title="Simulation Hits", box=rich_box.ROUNDED,
+                  border_style="magenta", header_style="bold magenta")
+        t.add_column("Attack", style="bold white")
+        t.add_column("Address", style="addr", no_wrap=True)
+        t.add_column("Result", style="bold")
+        for r in hits:
+            t.add_row(r["attack"], r["address"], "[success]SUCCESS ✔[/]")
+        ui.console.print(t)
+    else:
+        ui.info(f"{len(results)} attack simulation(s) run, 0 succeeded — "
+                "selectors absent or guarded on these contracts.")
     if ok_count:
         ui.warn("Remember: simulator hits are selector-based — verify each success "
                 "with `cast call` or an anvil fork before reporting.")

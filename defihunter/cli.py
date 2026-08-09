@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.23"
+__version__ = "1.3.24"
 
 
 def _banner():
@@ -319,9 +319,9 @@ def benchmark(as_json):
     ui.console.print()
 
     s = summarize(results)
-    title = (f"Detected {s['detected']}/{s['total']} historical exploit "
-             f"classes ({s['pct']}%) — {s['false_positives']} false "
-             f"positive(s) on the clean vault")
+    title = (f"Detected {s['detected']}/{s['total']} benchmark cases "
+             f"({s['pct']}%) — {s['false_positives']} false "
+             f"positive(s) on {s['control_count']} clean control(s)")
     ui.console.print(Panel(title, border_style="bright_green"
                            if s["detected"] == s["total"] else "bright_red",
                            box=_box.DOUBLE, expand=False))

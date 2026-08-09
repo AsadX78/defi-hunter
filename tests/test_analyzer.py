@@ -105,6 +105,44 @@ class TestAnalyzeFile:
         f = analyze_file(p)
         assert any(x["severity"] == "HIGH" and "secret" in x["title"].lower() for x in f)
 
+    def test_padded_selector_is_not_secret(self, tmp_path):
+        """Yul assembly mstore(function-selector + 56 zero-bytes) is a PUBLIC
+        ERC20 selector (0x23b872dd = transferFrom), not a private key. This
+        false positive was found on Uniswap's audited Permit2."""
+        p = _write(tmp_path, "Sel.sol", """
+            contract Sel {
+                function sel(address to, uint256 amount) public pure {
+                    assembly {
+                        let fmp := mload(0x40)
+                        mstore(fmp, 0x23b872dd00000000000000000000000000000000000000000000000000000000)
+                        mstore(add(fmp, 4), to)
+                        mstore(add(fmp, 36), amount)
+                    }
+                }
+            }
+        """)
+        f = analyze_file(p)
+        assert not any("64-hex" in x["title"] for x in f)
+        assert not any("private key" in x["title"].lower() for x in f)
+
+    def test_erc1967_slots_are_not_secret(self, tmp_path):
+        """The EIP-1967 implementation/admin/beacon storage slots are public,
+        documented constants — found in EVERY proxy. Not leaked keys (MORPHO
+        token regression)."""
+        p = _write(tmp_path, "Proxy.sol", """
+            contract Proxy {
+                bytes32 internal constant IMPLEMENTATION_SLOT =
+                    0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+                bytes32 internal constant ADMIN_SLOT =
+                    0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+                bytes32 internal constant BEACON_SLOT =
+                    0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50;
+            }
+        """)
+        f = analyze_file(p)
+        assert not any("64-hex" in x["title"] for x in f)
+        assert not any("private key" in x["title"].lower() for x in f)
+
     def test_spot_oracle_medium(self, tmp_path):
         p = _write(tmp_path, "Feed.sol", """
             contract Feed {
@@ -529,3 +567,150 @@ interface IAVSDirectory {
         assert not _is_interface("/tmp/x/StrategyManager.sol")
         assert not _is_interface("/tmp/x/Index.sol")      # I + lowercase is a name, not interface
         assert not _is_interface("/tmp/x/Inflation.sol")
+
+
+class TestContractAnalyzerUnified:
+    """Address scans now run the SAME line-aware engine as repo scans."""
+
+    def _analyzer(self, monkeypatch, source):
+        from defihunter.core.analyzer import ContractAnalyzer
+        a = ContractAnalyzer(rpc_url="http://localhost:8545")
+        monkeypatch.setattr(a, "_get_source", lambda addr: source)
+        return a.analyze("0x58d97b57bb95320f9a05dc918aef65434969c2b2")
+
+    def test_findings_carry_address_and_attack(self, monkeypatch):
+        findings = self._analyzer(monkeypatch, """
+            contract Token {
+                function mint(address to, uint256 amount) public {
+                    balances[to] += amount;
+                }
+            }
+        """)
+        assert findings
+        for f in findings:
+            assert f.get("address") == "0x58d97b57bb95320f9a05dc918aef65434969c2b2"
+        assert any(f.get("attack") == "mint" for f in findings)
+
+    def test_erc20_transfer_is_not_reentrancy(self, monkeypatch):
+        """The old crude rule flagged ANY `.transfer(` as CRITICAL — an ERC20's
+        own transfer() would blow up. That noise is gone."""
+        findings = self._analyzer(monkeypatch, """
+            contract Token {
+                mapping(address => uint256) public balanceOf;
+                function transfer(address to, uint256 amount) public returns (bool) {
+                    balanceOf[msg.sender] -= amount;
+                    balanceOf[to] += amount;
+                    return true;
+                }
+            }
+        """)
+        assert not any(f.get("severity") == "CRITICAL" for f in findings)
+        assert not any(f.get("attack") == "reentrancy" for f in findings)
+
+    def test_eth_call_still_caught(self, monkeypatch):
+        findings = self._analyzer(monkeypatch, """
+            contract Vault {
+                mapping(address => uint256) public balances;
+                function withdraw(uint256 amt) public {
+                    (bool ok, ) = msg.sender.call{value: amt}("");
+                    require(ok);
+                    balances[msg.sender] -= amt;
+                }
+            }
+        """)
+        assert any(f.get("attack") == "reentrancy" for f in findings)
+
+    def test_payable_transfer_still_caught(self, monkeypatch):
+        findings = self._analyzer(monkeypatch, """
+            contract Bank {
+                address public owner;
+                function sweep() public {
+                    payable(owner).transfer(address(this).balance);
+                }
+            }
+        """)
+        assert any(f.get("attack") == "reentrancy" for f in findings)
+
+    def test_proxy_note_is_low_and_forkable(self, monkeypatch):
+        findings = self._analyzer(monkeypatch, """
+            contract Proxy {
+                address public implementation;
+                fallback() external { implementation.delegatecall(msg.data); }
+            }
+        """)
+        assert any(f.get("severity") == "LOW"
+                   and f.get("attack") == "delegatecall"
+                   and "proxy" in f.get("title", "").lower()
+                   for f in findings)
+
+    def test_json_standard_input_parsed(self, monkeypatch):
+        from defihunter.core.analyzer import _source_texts
+        blob = ('{"language":"Solidity","sources":{"A.sol":{"content":'
+                '"contract A { function kill() public { selfdestruct(payable(msg.sender)); } }"},'
+                '"B.sol":{"content":"contract B { function mint(address to) public {} }"}}}')
+        texts = _source_texts(blob)
+        assert len(texts) == 2
+        assert "kill()" in texts[0]
+
+    def test_json_double_braced_wrapper_parsed(self, monkeypatch):
+        """Real Etherscan standard-json blobs come wrapped in an EXTRA pair
+        of braces ({{...}}). json.loads fails on them — the unified parser
+        must unwrap before parsing, or address scans silently return no
+        findings (the MORPHO token bug)."""
+        from defihunter.core.analyzer import _source_texts
+        blob = ('{{"language":"Solidity","sources":{"Morpho.sol":{"content":'
+                '"contract Morpho { function kill() public { selfdestruct(payable(msg.sender)); } }"},'
+                '"Token.sol":{"content":"contract Token { function mint(address to) public {} }"}}}}')
+        texts = _source_texts(blob)
+        assert len(texts) == 2
+        assert "selfdestruct" in texts[0]
+        assert "Token" in texts[1]
+
+    def test_json_wrapper_unwrapped_findings(self, monkeypatch):
+        """End-to-end: a double-braced blob must produce real findings."""
+        findings = self._analyzer(monkeypatch, (
+            '{{"language":"Solidity","sources":{"Morpho.sol":{"content":'
+            '"contract Morpho { function kill() public { selfdestruct(payable(msg.sender)); } }"}}}}'
+        ))
+        assert any(f.get("severity") == "CRITICAL"
+                   and "selfdestruct" in f.get("title", "")
+                   for f in findings)
+
+    def test_no_source_returns_empty(self, monkeypatch):
+        from defihunter.core.analyzer import ContractAnalyzer
+        a = ContractAnalyzer(rpc_url="http://localhost:8545")
+        monkeypatch.setattr(a, "_get_source", lambda addr: "")
+        assert a.analyze("0xabc") == []
+
+
+class TestForkVerifyAddressFindings:
+    """Address-scan findings (f['address']) skip repo resolution entirely."""
+
+    def test_resolves_directly_via_address(self, tmp_path, monkeypatch):
+        from defihunter import wizard
+        finding = {
+            "severity": "HIGH", "title": "unguarded mint",
+            "file": "0x58d97b57bb95320f9a05dc918aef65434969c2b2",
+            "line": 3, "attack": "mint",
+            "address": "0x58d97b57bb95320f9a05dc918aef65434969c2b2",
+        }
+        called = []
+        class FakeFork:
+            available = True
+            rpc_url = "http://127.0.0.1:8545"
+            why_not = ""
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def run(self, attack, target, source_finding=None):
+                called.append((attack, target))
+                return {"success": True, "attack": attack, "target": target,
+                        "source_finding": source_finding}
+        monkeypatch.setattr(wizard, "ForkSimulator", lambda rpc_url=None: FakeFork())
+        from rich.console import Console
+        monkeypatch.setattr(wizard.ui, "console",
+                            Console(file=__import__("io").StringIO(),
+                                    force_terminal=False, color_system=None,
+                                    width=120, theme=wizard.ui.THEME))
+        results = wizard._run_fork_verify([finding], {}, "http://rpc")
+        assert called == [("mint", "0x58d97b57bb95320f9a05dc918aef65434969c2b2")]
+        assert results[0]["success"]

@@ -194,6 +194,29 @@ contract GuardedVault {
 }
 """,
     },
+    {
+        "id": "control-public-constants",
+        "ref": "Clean control — public 64-hex constants (EIP-1967 slots, padded "
+              "ERC20 selectors) must NOT be reported as hardcoded keys "
+              "(MORPHO token / Uniswap Permit2 false positives)",
+        "control": True,
+        "expect": [],
+        "source": """
+pragma solidity ^0.8.0;
+contract ProxyWithSelectors {
+    bytes32 internal constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+    function invoke(address to, uint256 amount) public pure {
+        assembly {
+            let fmp := mload(0x40)
+            mstore(fmp, 0xa9059cbb00000000000000000000000000000000000000000000000000000000)
+            mstore(add(fmp, 4), to)
+            mstore(add(fmp, 36), amount)
+        }
+    }
+}
+""",
+    },
 ]
 
 
