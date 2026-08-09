@@ -3,6 +3,8 @@
 # Install the package + dev dependencies (uses .venv on PEP-668 systems)
 PY ?= python3
 VENV := .venv
+# User-writable bin dir that is (usually) already on PATH — no sudo needed
+BINDIR ?= $(HOME)/.local/bin
 
 install:
 	@if [ -d "$(VENV)" ]; then \
@@ -12,7 +14,12 @@ install:
 		echo "[*] Creating $(VENV)"; \
 		$(PY) -m venv $(VENV) && $(VENV)/bin/pip install -q -e ".[dev]"; \
 	fi
-	@echo "[+] Done. Activate with: source $(VENV)/bin/activate  (or run commands via $(VENV)/bin/defihunter)"
+	@echo "[*] Linking 'defihunter' into $(BINDIR) so it's on your PATH"
+	@mkdir -p $(BINDIR)
+	@printf '#!/usr/bin/env bash\nexec "%s/$(VENV)/bin/defihunter" "$$@"\n' "$$(pwd)" > $(BINDIR)/defihunter
+	@chmod +x $(BINDIR)/defihunter
+	@echo "[+] Done. Just run: defihunter"
+	@echo "    (if 'defihunter' is not found, add this to your shell: export PATH=\"$(BINDIR):\$$PATH\")"
 
 # Run the Python test suite
 test:
