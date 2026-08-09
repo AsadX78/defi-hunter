@@ -15,7 +15,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.12"
+__version__ = "1.3.13"
 
 
 def _banner():
@@ -202,6 +202,70 @@ def batch(ctx, target, addresses, rpc):
         ui.console.print(ui.findings_table(all_findings))
     else:
         ui.ok(f"Total findings: 0 — {len(addrs)} contract(s) clean")
+
+
+@analyze.command()
+@click.option('--target', '-t', required=True, help='GitHub repo URL of the protocol (e.g. https://github.com/Layr-Labs/eigenlayer-contracts)')
+@click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL (for optional fork verification)')
+@click.option('--json', 'as_json', is_flag=True, help='Write findings to output/analyze_<ts>.json')
+@click.option('--no-fork', is_flag=True, help='Skip anvil fork verification')
+@click.pass_context
+def repo(ctx, target, rpc, as_json, no_fork):
+    """Analyze a cloned GitHub repo's Solidity source (no Etherscan key needed).
+
+    Clones the repo, scans every protocol-owned .sol file line-by-line
+    (selfdestruct, tx.origin auth, delegatecall, unguarded mint/initialize,
+    spot oracles, hardcoded secrets) and optionally proves the callable
+    findings on a real anvil mainnet fork.
+    """
+    from defihunter.core.analyzer import analyze_repo_dir
+    from defihunter.core.github import clone
+    from defihunter.wizard import _run_fork_verify
+
+    ui.rule("ANALYZE REPO")
+    ui.step("Target repo", target)
+
+    with ui.spinner("Cloning repo"):
+        repo_dir = clone(target)
+    ui.info(f"Cloned to {repo_dir}")
+
+    with ui.spinner("Scanning Solidity source"):
+        findings = analyze_repo_dir(str(repo_dir), repo_label=target)
+    ui.info(f"Analyzed {len({f['file'] for f in findings})} source file(s) "
+            f"({len(findings)} finding(s))")
+
+    if findings:
+        ui.console.print(ui.findings_table(findings))
+    else:
+        ui.ok("No obvious vulnerabilities found in source.")
+
+    fork_results = []
+    if findings and not no_fork:
+        # Minimal contract map for file->address resolution (best effort).
+        from defihunter.core.github import extract_addresses
+        contracts = {addr: info for addr, info in extract_addresses(Path(repo_dir)).items()}
+        fork_results = _run_fork_verify(findings, contracts, rpc)
+
+    if as_json and findings:
+        import json as _json
+        from datetime import datetime as _dt
+        out_dir = Path("output")
+        out_dir.mkdir(exist_ok=True)
+        path = out_dir / f"analyze_{_dt.now().strftime('%Y%m%d_%H%M%S')}.json"
+        path.write_text(_json.dumps({
+            "target": target,
+            "vulnerabilities": findings,
+            "fork_verified": fork_results,
+        }, indent=2))
+        ui.ok(f"Findings saved: {path}")
+
+    fork_ok = sum(1 for r in fork_results if r.get("success"))
+    ui.console.print(ui.summary_panel([
+        ("repo", target),
+        ("files analyzed", str(len({f['file'] for f in findings}))),
+        ("findings", str(len(findings))),
+        ("fork-verified", f"{len(fork_results)} run, {fork_ok} exploitable"),
+    ], title="Analyze Complete"))
 
 
 @cli.group()

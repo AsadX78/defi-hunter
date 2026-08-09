@@ -23,9 +23,9 @@ from rich.text import Text
 
 from defihunter import ui
 from defihunter.core import config, github
-from defihunter.core.analyzer import ContractAnalyzer
+from defihunter.core.analyzer import ContractAnalyzer, analyze_repo_dir
 from defihunter.core.reporter import ReportGenerator
-from defihunter.core.simulator import AttackSimulator
+from defihunter.core.simulator import AttackSimulator, ForkSimulator
 
 ALL_ATTACKS = [
     "inflation", "admin", "governance", "oracle", "reentrancy", "bridge",
@@ -199,11 +199,32 @@ def ask_attacks() -> List[str]:
 # ---------------------------------------------------------------------------
 
 
-def _run_static(contracts: Dict[str, Dict], rpc: Optional[str] = None) -> List[Dict]:
-    """Run ContractAnalyzer against every verified contract."""
+def _run_static(scan: Dict, contracts: Dict[str, Dict], rpc: Optional[str] = None) -> List[Dict]:
+    """Run static analysis.
+
+    Source-level first: when the scan produced a local clone (repo_dir is a
+    real directory), every protocol-owned .sol file is analyzed line-by-line
+    with file:line evidence — no Etherscan key needed. Address-level analysis
+    (Etherscan source) only kicks in for address-list scans, where there is
+    no local source to read.
+    """
     ui.rule("STATIC ANALYSIS")
-    analyzer = ContractAnalyzer(rpc_url=rpc)
     findings: List[Dict] = []
+
+    repo_dir = scan.get("repo_dir", "")
+    local = Path(repo_dir).expanduser().resolve() if repo_dir else None
+    if local and local.is_dir():
+        with ui.spinner(f"Analyzing Solidity source in {repo_dir}"):
+            findings = analyze_repo_dir(str(local), repo_label=scan.get("repo_url", repo_dir))
+        ui.info(f"Analyzed {len({f['file'] for f in findings})} source file(s) "
+                f"({len(findings)} hit(s))")
+        if findings:
+            ui.console.print(ui.findings_table(findings, title="Source Findings"))
+            _print_attack_routes(findings)
+        return findings
+
+    # Address-list fallback: no local source, use the Etherscan-backed analyzer.
+    analyzer = ContractAnalyzer(rpc_url=rpc)
     progress, task = ui.progress_bar(len(contracts), "Analyzing contracts")
     with progress:
         for addr in contracts:
@@ -215,9 +236,85 @@ def _run_static(contracts: Dict[str, Dict], rpc: Optional[str] = None) -> List[D
     if findings:
         ui.warn(f"{len(findings)} finding(s):")
         ui.console.print(ui.findings_table(findings))
+        _print_attack_routes(findings)
     else:
         ui.ok("No obvious vulnerabilities found")
     return findings
+
+
+# Attack tags → short exploitation route, so each finding chains straight
+# into the wizard's simulation menu (option 4 of the hunt).
+ATTACK_ROUTES = {
+    "mint": "mint — call mint() as an attacker on an anvil fork; if it succeeds, supply is unbounded",
+    "initialize": "initialize — first-caller proxy takeover; replay initialize() on a fork from a fresh account",
+    "delegatecall": "delegatecall — point the target at attacker logic and confirm storage/balance impact on a fork",
+    "reentrancy": "reentrancy — chain a callback (receive/onFlashLoan) around the external call and double-drain",
+    "oracle": "oracle — flash-loan swap the spot pair, then call the pricing function to prove distortion",
+    "admin": "admin — verify the privileged role is timelocked/DAO-gated; key compromise = full drain",
+}
+
+
+def _print_attack_routes(findings: List[Dict]) -> None:
+    """Show the attack path chained to each static finding."""
+    routes = []
+    for f in findings:
+        tag = f.get("attack")
+        if tag and tag in ATTACK_ROUTES:
+            routes.append(f"{f.get('title', 'finding')} → {ATTACK_ROUTES[tag]}")
+    if routes:
+        ui.console.print()
+        ui.console.print(ui.summary_panel(
+            [(f"attack route", r) for r in sorted(set(routes))],
+            title="Chained Attack Routes",
+        ))
+
+
+def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
+                     rpc: Optional[str]) -> List[Dict]:
+    """Prove the callable-by-anyone findings on a real anvil fork.
+
+    Static analysis says *possible*; an eth_call from an attacker account on
+    a mainnet fork says *provable*. The source findings carry a relative file
+    path — the recon scan recorded which file each deployed address was
+    declared in, so we can map file:line findings back to live addresses and
+    actually call them on the fork.
+    """
+    ui.rule("FORK VERIFICATION")
+    verifiable = [f for f in findings if f.get("attack") in ("mint", "initialize", "delegatecall")]
+    if not verifiable:
+        ui.info("No callable-by-anyone findings (mint/initialize/delegatecall) to fork-verify.")
+        return []
+
+    # file (repo-relative) -> deployed addresses that mention it in source
+    by_file: Dict[str, List[str]] = {}
+    for addr, info in contracts.items():
+        for src in info.get("sources") or []:
+            by_file.setdefault(str(src), []).append(addr)
+    resolved = []
+    for f in verifiable:
+        fname = str(f.get("file", ""))
+        addrs = sorted(set(by_file.get(fname, [])))
+        for addr in addrs[:3]:  # cap: 3 deployments per finding
+            resolved.append((f, addr))
+    if not resolved:
+        ui.info("No deployed addresses found for the flagged files — fork "
+                "verification needs a live address to call.")
+        return []
+
+    results: List[Dict] = []
+    with ForkSimulator(rpc_url=rpc) as fork:
+        if not fork.available:
+            ui.warn(fork.why_not)
+            return results
+        ui.info(f"Anvil fork live on {fork.rpc_url} — verifying {len(resolved)} file→address hit(s)")
+        for f, addr in resolved:
+            res = fork.run(f["attack"], addr, source_finding=f)
+            results.append(res)
+    ok = sum(1 for r in results if r.get("success"))
+    if ok:
+        ui.warn(f"{ok} finding(s) CONFIRMED callable by an arbitrary account — "
+                "these are real attack surfaces, not heuristics.")
+    return results
 
 
 def _run_simulate(contracts: Dict[str, Dict], attacks: List[str], rpc: Optional[str] = None) -> List[Dict]:
@@ -520,29 +617,35 @@ def run_wizard(
     # --- 5. Run ------------------------------------------------------------
     findings: List[Dict] = []
     sim_results: List[Dict] = []
+    fork_results: List[Dict] = []
 
     if check in ("static", "both"):
-        findings = _run_static(contracts, rpc=rpc)
+        findings = _run_static(scan, contracts, rpc=rpc)
+        if findings and not os.environ.get("DEFIHUNTER_SKIP_FORK"):
+            fork_results = _run_fork_verify(findings, contracts, rpc=rpc)
     if check in ("simulate", "both"):
         sim_results = _run_simulate(contracts, attacks, rpc=rpc)
 
     # --- Report ------------------------------------------------------------
     ui.console.print()
     if Confirm.ask("[step]Generate an HTML report?[/]", default=True):
-        _write_report(scan, findings, sim_results)
+        _write_report(scan, findings, sim_results, fork_results)
 
     sim_successes = sum(1 for r in sim_results if r.get("success"))
+    fork_successes = sum(1 for r in fork_results if r.get("success"))
     ui.console.print(ui.summary_panel([
         ("repo", scan.get("repo_url", repo_url)),
         ("addresses", str(scan["total_addresses"])),
         ("contracts checked", str(len(contracts))),
         ("static findings", str(len(findings))),
+        ("fork-verified", f"{len(fork_results)} run, {fork_successes} exploitable"),
         ("simulations", f"{len(sim_results)} run, {sim_successes} succeeded"),
     ], title="Hunt Complete"))
     ui.ok("Done. Happy hunting!")
 
 
-def _write_report(scan: Dict, findings: List[Dict], sim_results: List[Dict]) -> None:
+def _write_report(scan: Dict, findings: List[Dict], sim_results: List[Dict],
+                  fork_results: Optional[List[Dict]] = None) -> None:
     """Persist findings JSON + HTML report into ./output."""
     out_dir = Path("output")
     out_dir.mkdir(exist_ok=True)
@@ -553,6 +656,7 @@ def _write_report(scan: Dict, findings: List[Dict], sim_results: List[Dict]) -> 
         "contracts": scan.get("contracts", {}),
         "vulnerabilities": findings,
         "simulations": sim_results,
+        "fork_verified": fork_results or [],
     }
     json_path = out_dir / f"wizard_{ts}.json"
     json_path.write_text(json.dumps(payload, indent=2))

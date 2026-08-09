@@ -186,7 +186,13 @@ def contracts_table(contracts: Dict[str, Dict[str, Any]], title: str = "Contract
 
 
 def findings_table(findings: Sequence[Dict[str, Any]], title: str = "Findings") -> Table:
-    """Render analyzer / simulated findings with colored severity."""
+    """Render analyzer / simulated findings with colored severity.
+
+    Source-level findings (file/line) get a Location column; address-level
+    findings fall back to the endpoint/address. Attack tag shows the chained
+    playbook route (e.g. 'mint', 'initialize') when present.
+    """
+    has_location = any(f.get("file") and f.get("line") for f in findings)
     table = Table(
         title=title,
         box=box.ROUNDED,
@@ -195,15 +201,30 @@ def findings_table(findings: Sequence[Dict[str, Any]], title: str = "Findings") 
     )
     table.add_column("Severity", style="bold")
     table.add_column("Title", style="bold white")
+    if has_location:
+        table.add_column("Location", style="addr")
+    table.add_column("Attack", style="accent")
     table.add_column("Endpoint / Address", style="addr")
 
     for f in findings:
         sev = str(f.get("severity", "INFO")).upper()
-        table.add_row(
-            Text(sev, style=f"sev.{sev}"),
-            str(f.get("title", "Unknown")),
-            str(f.get("endpoint", f.get("address", "-"))),
-        )
+        attack = str(f.get("attack") or "-")
+        if has_location:
+            loc = f"{f.get('file')}:{f.get('line')}" if f.get("file") else "-"
+            table.add_row(
+                Text(sev, style=f"sev.{sev}"),
+                str(f.get("title", "Unknown")),
+                loc,
+                attack,
+                str(f.get("endpoint", f.get("address", "-"))),
+            )
+        else:
+            table.add_row(
+                Text(sev, style=f"sev.{sev}"),
+                str(f.get("title", "Unknown")),
+                attack,
+                str(f.get("endpoint", f.get("address", "-"))),
+            )
     return table
 
 

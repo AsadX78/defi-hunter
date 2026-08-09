@@ -366,3 +366,176 @@ class AttackSimulator:
                 'description': 'Token mint() lacks onlyOwner/minter role check',
             }
         return {'success': False, 'error': 'No public mint(address,uint256) detected'}
+
+# ---------------------------------------------------------------------------
+# ForkSimulator — REAL fork verification (anvil + cast).
+# Static analysis says "possible"; an eth_call from an arbitrary attacker
+# account on a mainnet fork says "provable". Degrades gracefully when the
+# foundry binaries or an RPC URL are unavailable — the wizard keeps running.
+# ---------------------------------------------------------------------------
+
+class ForkSimulator:
+    """Context manager: boot an anvil fork, prove callable-by-anyone
+    findings with real eth_call, tear the fork down on exit.
+
+    Usage:
+        with ForkSimulator(rpc_url="https://eth-mainnet...") as fork:
+            if not fork.available:
+                print(fork.why_not)
+            fork.run("mint", "0x1234...")
+    """
+
+    def __init__(self, rpc_url: Optional[str] = None, block: Optional[int] = None,
+                 port: Optional[int] = None):
+        self.rpc_url = rpc_url
+        self.block = block
+        self.port = port or self._free_port()
+        self.proc = None
+        self.available = False
+        self.why_not = ""
+        self.attacker = "0x1111111111111111111111111111111111111111"
+
+    @staticmethod
+    def _free_port() -> int:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def _has_tool(self, name: str) -> bool:
+        import shutil
+        return shutil.which(name) is not None
+
+    def __enter__(self) -> "ForkSimulator":
+        if not self._has_tool("anvil") or not self._has_tool("cast"):
+            self.why_not = ("Fork verification skipped: foundry binaries "
+                            "(anvil/cast) not found on PATH.")
+            return self
+        if not self.rpc_url or "http" not in self.rpc_url:
+            self.why_not = ("Fork verification skipped: no mainnet RPC URL "
+                            "available to fork.")
+            return self
+        import subprocess as sp
+        cmd = ["anvil", "--port", str(self.port), "--fork-url", self.rpc_url,
+               "--silent"]
+        if self.block:
+            cmd += ["--fork-block-number", str(self.block)]
+        try:
+            self.proc = sp.Popen(cmd, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+        except OSError as e:
+            self.why_not = f"Fork verification skipped: could not start anvil ({e})."
+            return self
+        if self._wait_ready(40):
+            self.available = True
+        else:
+            self.why_not = "Fork verification skipped: anvil fork did not become ready."
+            self.__exit__(None, None, None)
+        return self
+
+    def _wait_ready(self, timeout: int = 40) -> bool:
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                out = subprocess.run(
+                    ["cast", "block-number", "--rpc-url", self.rpc_url_local],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if out.returncode == 0 and out.stdout.strip().isdigit():
+                    return True
+            except Exception:
+                pass
+            time.sleep(1)
+        return False
+
+    @property
+    def rpc_url_local(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def _call(self, selector: str, args: List[str], extra_from: bool = True) -> Dict:
+        cmd = ["cast", "call", self._target, selector, *args,
+               "--rpc-url", self.rpc_url_local]
+        if extra_from:
+            cmd += ["--from", self.attacker]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return {"ok": proc.returncode == 0, "stdout": proc.stdout.strip(),
+                "stderr": proc.stderr.strip()}
+
+    def run(self, attack: str, target: str, source_finding: Optional[Dict] = None) -> Dict:
+        """eth_call the finding's attack path from an arbitrary account.
+
+        A call that does NOT revert proves the function is callable by anyone
+        — i.e. the static finding is a live, exploitable surface.
+        """
+        if not self.available:
+            return {"success": False, "error": self.why_not, "attack": attack,
+                    "target": target, "source_finding": source_finding}
+        self._target = target
+        steps: List[Dict] = []
+
+        if attack == "mint":
+            r = self._call("mint(address,uint256)", [self.attacker, "1000000"])
+            steps.append({"step": "mint(address,uint256) from arbitrary account",
+                          "value": "returned" if r["ok"] else "reverted"})
+            if r["ok"]:
+                return {"success": True, "attack": attack, "target": target,
+                        "profit": "Unlimited token supply minted for free",
+                        "steps": steps,
+                        "evidence": r["stdout"][:120] or "0x",
+                        "source_finding": source_finding}
+            return {"success": False, "attack": attack, "target": target,
+                    "steps": steps, "evidence": r["stderr"][:160],
+                    "source_finding": source_finding}
+
+        if attack == "initialize":
+            tried = []
+            for sel, args in [("initialize()", []), ("initialize(address)", [self.attacker])]:
+                r = self._call(sel, args)
+                tried.append(f"{sel}: {'returned' if r['ok'] else 'reverted'}")
+                if r["ok"]:
+                    steps.append({"step": sel + " from arbitrary account",
+                                  "value": "returned — not yet initialized!"})
+                    return {"success": True, "attack": attack, "target": target,
+                            "profit": "Full contract takeover (first-caller becomes owner)",
+                            "steps": steps, "evidence": sel,
+                            "source_finding": source_finding}
+            steps.append({"step": "initialize() attempts", "value": "; ".join(tried)})
+            return {"success": False, "attack": attack, "target": target,
+                    "steps": steps,
+                    "evidence": "All initialize() variants reverted (likely guarded/already initialized).",
+                    "source_finding": source_finding}
+
+        if attack == "delegatecall":
+            # Permissionless proxy upgrade = arbitrary delegatecall.
+            dummy = "0x2222222222222222222222222222222222222222"
+            tried = []
+            for sel, args in [("upgradeTo(address)", [dummy]),
+                              ("setImplementation(address)", [dummy]),
+                              ("setTarget(address)", [dummy])]:
+                r = self._call(sel, args)
+                tried.append(f"{sel}: {'returned' if r['ok'] else 'reverted'}")
+                if r["ok"]:
+                    steps.append({"step": sel + " from arbitrary account",
+                                  "value": "returned — proxy upgradeable by anyone"})
+                    return {"success": True, "attack": attack, "target": target,
+                            "profit": "Full proxy storage/balance takeover via delegatecall",
+                            "steps": steps, "evidence": sel,
+                            "source_finding": source_finding}
+            steps.append({"step": "proxy-upgrade selectors", "value": "; ".join(tried)})
+            return {"success": False, "attack": attack, "target": target,
+                    "steps": steps,
+                    "evidence": "No permissionless proxy-upgrade selector found.",
+                    "source_finding": source_finding}
+
+        return {"success": False, "attack": attack, "target": target,
+                "error": f"ForkSimulator does not support attack '{attack}'",
+                "source_finding": source_finding}
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self.proc is not None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.kill()
+            self.proc = None
