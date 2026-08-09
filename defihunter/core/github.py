@@ -396,6 +396,7 @@ def _build_contract_entry(
         vinfo = verified_addrs[addr]
         entry.update({
             "name": vinfo.get("name", "Unknown"),
+            "symbol": vinfo.get("symbol"),
             "code_size": vinfo.get("code_size", 0),
             "has_code": True,
             "verified": True,

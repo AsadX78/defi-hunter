@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from rich.prompt import Confirm, Prompt
+from rich.text import Text
 
 from defihunter import ui
 from defihunter.core import config, github
@@ -32,6 +33,31 @@ ALL_ATTACKS = [
     "liquidation", "forcesend", "peg", "crossfunc", "delegatecall", "mint",
 ]
 RECOMMENDED_ATTACKS = ["initialize", "admin", "mint", "inflation", "withdraw", "permit"]
+
+
+def _norm_identity(value: Optional[str]) -> str:
+    """Normalize a name/symbol for comparison: lowercase, strip quotes/spaces."""
+    return re.sub(r"\s+", " ", (value or "").strip().strip('"')).lower()
+
+
+def identity_match(expected: str, name: Optional[str], symbol: Optional[str]) -> str:
+    """Compare an expected protocol name to the anchor's on-chain name/symbol.
+
+    Returns one of:
+      "match"    — on-chain identity contains/equals the expected name
+      "mismatch" — contract responds to name()/symbol() but nothing matches
+      "unknown"  — no expected name, or the contract has no ERC20 metadata
+    Used to flag wrong anchors (e.g. DefiLlama resolves 'eigenlayer' to
+    EigenCloud but the token says 'EigenLayer' — code exists, identity doesn't).
+    """
+    exp = _norm_identity(expected)
+    candidates = [c for c in (_norm_identity(name), _norm_identity(symbol)) if c]
+    if not exp or not candidates:
+        return "unknown"
+    for c in candidates:
+        if c == exp or exp in c:
+            return "match"
+    return "mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +345,41 @@ def _scan_llama_protocol(source: str, rpc: Optional[str]) -> Dict:
     with ui.spinner(f"Scanning {len(info['addresses'])} anchor address(es)"):
         scan = github.scan_addresses(", ".join(info["addresses"]), rpc_url=rpc)
     scan["repo_url"] = f"DefiLlama: {info['name']}"
+
+    # Anchor identity check: 'code exists' isn't enough — confirm the on-chain
+    # name/symbol matches what DefiLlama resolved. Catches wrong anchors the
+    # sims would otherwise burn hours on.
+    verified_anchors = {a: i for a, i in scan["contracts"].items() if i.get("verified")}
+    if verified_anchors:
+        from rich.table import Table as RichTable
+        from rich import box as rich_box
+        t = RichTable(
+            title=f"Anchor identity vs '{info['name']}'",
+            box=rich_box.ROUNDED, border_style="cyan", header_style="bold cyan",
+        )
+        t.add_column("Address", style="addr", no_wrap=True)
+        t.add_column("On-chain name", style="bold white")
+        t.add_column("Symbol", style="bold")
+        t.add_column("Verdict", style="bold")
+        for addr, entry in verified_anchors.items():
+            name, symbol = entry.get("name", "Unknown"), entry.get("symbol")
+            verdict = identity_match(info["name"], name, symbol)
+            if verdict == "match":
+                v_txt, v_style = "✓ matches", "success"
+            elif verdict == "unknown":
+                v_txt, v_style = "? no metadata", "muted"
+            else:
+                v_txt, v_style = "✗ MISMATCH", "error"
+            entry["identity"] = verdict
+            t.add_row(addr, str(name), str(symbol or "—"),
+                      Text(v_txt, style=v_style))
+        ui.console.print(t)
+        if any(e.get("identity") == "mismatch" for e in verified_anchors.values()):
+            ui.warn("Anchor identity doesn't match the resolved protocol name. "
+                    "DefiLlama may have mapped a different protocol (e.g. a "
+                    "same-name fork) — double-check before trusting the sims.")
+        else:
+            ui.ok("Anchor identity confirmed on-chain.")
 
     # Depth: the anchor is often just the token — offer to scan a real repo.
     if orgs and _ask_org_repo(orgs[0]):

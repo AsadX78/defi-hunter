@@ -82,6 +82,13 @@ Three ways to hunt a protocol that has no public repo:
    defihunter wizard -r llama:spark
    ```
 
+   Since v1.3.8 the wizard also runs an **anchor identity check**: beyond
+   "code exists", it pulls the on-chain `name()`/`symbol()` and confirms they
+   match the protocol DefiLlama resolved (`✓ matches` / `✗ MISMATCH`). This
+   catches wrong anchors fast — e.g. `llama:eigenlayer` resolves to EigenCloud
+   on DefiLlama, but the token identifies itself as *EigenLayer*; the tool
+   flags that mismatch instead of letting the sims burn hours on it.
+
 2. **Paste 0x addresses directly** — skip the repo entirely:
    ```bash
    defihunter wizard -r "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2,0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" -c both

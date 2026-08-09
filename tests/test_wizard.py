@@ -3,6 +3,7 @@ import pytest
 from pathlib import Path
 
 from defihunter.core import github
+from defihunter import wizard
 
 
 @pytest.fixture()
@@ -381,3 +382,25 @@ def test_list_org_repos_sends_token_when_configured(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_123secret")
     github.list_org_repos("Layr-Labs")
     assert seen["headers"].get("Authorization") == "Bearer ghp_123secret"
+
+
+# --- Anchor identity matching ----------------------------------------------
+
+
+def test_identity_match_symbol_equals():
+    assert wizard.identity_match("sky", "SKY Governance Token", "SKY") == "match"
+
+
+def test_identity_match_name_substring():
+    # protocol name is a substring of the on-chain name
+    assert wizard.identity_match("eigenlayer", "EigenLayer", "EIGEN") == "match"
+
+
+def test_identity_match_detects_wrong_anchor():
+    # DefiLlama resolved EigenCloud but the token identifies as EigenLayer
+    assert wizard.identity_match("eigencloud", "EigenLayer", "EIGEN") == "mismatch"
+
+
+def test_identity_match_no_metadata():
+    assert wizard.identity_match("sky", None, None) == "unknown"
+    assert wizard.identity_match("", "Sky", "SKY") == "unknown"

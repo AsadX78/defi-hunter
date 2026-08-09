@@ -159,10 +159,12 @@ def contracts_table(contracts: Dict[str, Dict[str, Any]], title: str = "Contract
     table.add_column("#", style="muted", justify="right")
     table.add_column("Address", style="addr", no_wrap=True)
     table.add_column("Name", style="bold white")
+    table.add_column("Symbol", style="bold")
     table.add_column("Code", justify="right")
 
     for i, (addr, info) in enumerate(contracts.items(), 1):
         name = info.get("name", "Unknown")
+        symbol = info.get("symbol") or "—"
         code = info.get("code_size", 0)
         has_code = info.get("has_code", bool(code))
         status = info.get("status")
@@ -177,6 +179,7 @@ def contracts_table(contracts: Dict[str, Dict[str, Any]], title: str = "Contract
             str(i),
             addr,
             str(name),
+            str(symbol),
             Text(code_str, style=code_style),
         )
     return table

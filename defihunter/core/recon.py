@@ -74,16 +74,39 @@ class ReconScanner:
         
         return sorted(addresses)
     
+    def _erc20_meta(self, addr: str) -> tuple:
+        """Best-effort ERC20 name()/symbol() via `cast call`.
+
+        Returns (name, symbol); either is None when the contract doesn't
+        implement it (non-token contract) or the RPC call fails. Used to
+        confirm an anchor's on-chain identity matches what we expected —
+        'code exists' alone can't tell EIGEN from a decoy.
+        """
+        name = symbol = None
+        for field in ("name", "symbol"):
+            out = run(
+                f'cast call {addr} "{field}()(string)" '
+                f'--rpc-url {self.rpc_url} 2>/dev/null'
+            )
+            if out and out != "0x":
+                value = out.strip('"')
+                if value:
+                    if field == "name":
+                        name = value
+                    else:
+                        symbol = value
+        return name, symbol
+
     def _filter_contracts(self, addresses: List[str]) -> Dict:
         """Filter addresses to only contracts"""
         contracts = {}
         for addr in addresses:
             code = self._code_with_retry(addr)
             if code:
-                name = run(f'cast call {addr} "name()(string)" --rpc-url {self.rpc_url} 2>/dev/null')
-                name = name.strip('"') if name and name != "0x" else "Unknown"
+                name, symbol = self._erc20_meta(addr)
                 contracts[addr] = {
-                    "name": name,
+                    "name": name or "Unknown",
+                    "symbol": symbol,
                     "code_size": len(code),
                     "has_code": True,
                 }

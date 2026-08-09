@@ -77,3 +77,46 @@ def test_code_with_retry_gives_up_after_attempts(monkeypatch):
     assert Scanner()._code_with_retry(ADDR, attempts=3, backoff=1.0) == ""
     assert calls["n"] == 3
     assert sleeps == [1.0, 2.0]  # 1s and 2s backoff between retries
+
+
+# --- ERC20 metadata (name/symbol identity checks) --------------------------
+
+
+def test_erc20_meta_returns_name_and_symbol(monkeypatch):
+    """name()/symbol() calls are parsed into a clean tuple."""
+    def fake_run(cmd, timeout=30):
+        if 'name()(string)' in cmd:
+            return '"SKY Governance Token"'
+        if 'symbol()(string)' in cmd:
+            return '"SKY"'
+        return "0x"
+
+    monkeypatch.setattr("defihunter.core.recon.run", fake_run)
+    assert Scanner()._erc20_meta(ADDR) == ("SKY Governance Token", "SKY")
+
+
+def test_erc20_meta_tolerates_missing_metadata(monkeypatch):
+    """Non-token contracts (revert / empty / 0x) yield None, never crash."""
+    def fake_run(cmd, timeout=30):
+        return ""  # cast call reverted — no stdout
+
+    monkeypatch.setattr("defihunter.core.recon.run", fake_run)
+    assert Scanner()._erc20_meta(ADDR) == (None, None)
+
+
+def test_filter_contracts_stores_name_and_symbol(monkeypatch):
+    """Verified entries carry both name and symbol for the identity check."""
+    def fake_run(cmd, timeout=30):
+        if "cast code" in cmd:
+            return CODE
+        if 'name()(string)' in cmd:
+            return '"Sky Token"'
+        if 'symbol()(string)' in cmd:
+            return '"SKY"'
+        return ""
+
+    monkeypatch.setattr("defihunter.core.recon.run", fake_run)
+    contracts = Scanner()._filter_contracts([ADDR])
+    assert contracts[ADDR]["name"] == "Sky Token"
+    assert contracts[ADDR]["symbol"] == "SKY"
+    assert contracts[ADDR]["has_code"] is True
