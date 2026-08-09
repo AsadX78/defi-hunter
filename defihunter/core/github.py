@@ -78,6 +78,26 @@ def looks_like_git_url(url: str) -> bool:
     )
 
 
+def is_address_list(value: str) -> bool:
+    """True if the input is one or more 0x…40 addresses (comma/space separated).
+
+    Lets the wizard work on protocols with no GitHub repo — the user can
+    paste contract addresses directly (from a DEX UI, explorer, etc.).
+    """
+    return len(parse_address_list(value)) >= 1 and all(
+        re.fullmatch(r"0x[a-fA-F0-9]{40}", t) for t in parse_address_list(value)
+    )
+
+
+def parse_address_list(value: str) -> List[str]:
+    """Split an address-list input into normalized lowercase addresses."""
+    return [
+        t.strip().lower()
+        for t in re.split(r"[,\s]+", value.strip())
+        if t.strip()
+    ]
+
+
 def clone(repo_url: str) -> Path:
     """Shallow-clone a git repo into the temp dir. Returns the repo root."""
     TMP_ROOT.mkdir(parents=True, exist_ok=True)
@@ -165,27 +185,7 @@ def scan_repo(
             verified_addrs = scanner._filter_contracts(to_verify)
 
     for addr, info in ordered:
-        entry = dict(info)
-        if addr in verified_addrs:
-            vinfo = verified_addrs[addr]
-            entry.update({
-                "name": vinfo.get("name", "Unknown"),
-                "code_size": vinfo.get("code_size", 0),
-                "has_code": True,
-                "verified": True,
-                "status": f"{vinfo.get('code_size', 0):,} bytes",
-            })
-        elif rpc_url:
-            entry.update({
-                "name": "Unknown", "code_size": 0, "has_code": False,
-                "verified": False, "status": "no code",
-            })
-        else:
-            entry.update({
-                "name": "Unknown", "code_size": 0, "has_code": False,
-                "verified": False, "status": "unverified",
-            })
-        contracts[addr] = entry
+        contracts[addr] = _build_contract_entry(addr, info, verified_addrs, rpc_url)
 
     return {
         "repo_url": repo_source,
@@ -193,3 +193,64 @@ def scan_repo(
         "total_addresses": len(addresses),
         "contracts": contracts,
     }
+
+
+def scan_addresses(
+    source: str,
+    rpc_url: Optional[str] = None,
+    verbose: bool = False,
+) -> Dict:
+    """Scan a comma/space-separated list of 0x addresses instead of a repo.
+
+    For protocols without a GitHub link: paste the contract addresses and
+    the rest of the wizard flow (verify → preview → checks → report) works
+    exactly the same. Returns the same shape as scan_repo().
+    """
+    addresses = parse_address_list(source)
+
+    verified_addrs: Dict[str, Dict[str, object]] = {}
+    if rpc_url and addresses:
+        scanner = ReconScanner(rpc_url=rpc_url)
+        verified_addrs = scanner._filter_contracts(addresses)
+
+    contracts: Dict[str, Dict[str, object]] = {}
+    for addr in addresses:
+        contracts[addr] = _build_contract_entry(addr, {"sources": ["(provided)"], "count": 1},
+                                                verified_addrs, rpc_url)
+
+    return {
+        "repo_url": source,
+        "repo_dir": "(addresses)",
+        "total_addresses": len(addresses),
+        "contracts": contracts,
+    }
+
+
+def _build_contract_entry(
+    addr: str,
+    info: Dict[str, object],
+    verified_addrs: Dict[str, Dict[str, object]],
+    rpc_url: Optional[str],
+) -> Dict[str, object]:
+    """Turn a raw address + optional on-chain verification into a contract entry."""
+    entry = dict(info)
+    if addr in verified_addrs:
+        vinfo = verified_addrs[addr]
+        entry.update({
+            "name": vinfo.get("name", "Unknown"),
+            "code_size": vinfo.get("code_size", 0),
+            "has_code": True,
+            "verified": True,
+            "status": f"{vinfo.get('code_size', 0):,} bytes",
+        })
+    elif rpc_url:
+        entry.update({
+            "name": "Unknown", "code_size": 0, "has_code": False,
+            "verified": False, "status": "no code",
+        })
+    else:
+        entry.update({
+            "name": "Unknown", "code_size": 0, "has_code": False,
+            "verified": False, "status": "unverified",
+        })
+    return entry

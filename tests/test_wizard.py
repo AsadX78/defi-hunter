@@ -79,6 +79,33 @@ def test_scan_repo_no_rpc(fake_repo: Path):
     assert "repo_dir" in scan
 
 
+def test_address_list_helpers():
+    assert github.is_address_list("0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2")
+    assert github.is_address_list(
+        "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2, 0xCdFdFA..."
+        .replace("...", "0000000000000000000000000000000000")
+    )
+    assert github.is_address_list("0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2 "
+                                  + "0xCdFdFA" + "0" * 34)
+    assert not github.is_address_list("https://github.com/owner/repo")
+    assert not github.is_address_list("0x1234")
+    assert not github.is_address_list("0xzzzz9f8f72aa9304c8b593d555f12ef6589cc3a579a2")
+    parsed = github.parse_address_list(
+        "0x9F8f72Aa9304c8B593d555F12eF6589cC3A579A2, 0xcdFdFA000000000000000000000000000000000000"
+    )
+    assert parsed[0] == "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2"  # normalized lowercase
+    assert len(parsed) == 2
+
+
+def test_scan_addresses_no_rpc():
+    scan = github.scan_addresses("0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2", rpc_url=None)
+    assert scan["total_addresses"] == 1
+    assert scan["repo_dir"] == "(addresses)"
+    c = scan["contracts"]["0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2"]
+    assert not c["verified"]
+    assert c["status"] == "unverified"
+
+
 def test_wizard_boots_with_preset_repo(fake_repo: Path):
     """`defihunter wizard --repo <dir> --check static` should complete non-interactively
     except for the RPC question; supply 'skip' via stdin."""

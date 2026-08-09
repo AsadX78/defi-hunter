@@ -15,7 +15,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 
 
 def _banner():
@@ -43,7 +43,7 @@ def cli(ctx, config, verbose):
 
 
 @cli.command()
-@click.option('--repo', '-r', default=None, help='GitHub repo URL (skips the repo prompt)')
+@click.option('--repo', '-r', default=None, help='GitHub repo URL, local folder, or 0x addresses (skips the repo prompt)')
 @click.option('--check', '-c', type=click.Choice(['static', 'simulate', 'both']), default=None, help='Vulnerability check type (skips the prompt)')
 @click.option('--attacks', '-a', default=None, help='Comma-separated attack names for simulation (e.g. initialize,admin)')
 def wizard(repo, check, attacks):

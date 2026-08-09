@@ -58,6 +58,31 @@ defihunter wizard --repo https://github.com/Layr-Labs/eigenlayer-contracts \
 
 A local folder also works as the "repo" for testing repos that aren't public.
 
+### No GitHub link? No problem (v1.3)
+
+Three ways to hunt a protocol that has no public repo:
+
+1. **Paste 0x addresses directly** — skip the repo entirely:
+   ```bash
+   defihunter wizard -r "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2,0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" -c both
+   ```
+   (the wizard prompt accepts the same — comma/space separated). Addresses come
+   from anywhere: a DEX UI, a block explorer, `cast`, or step 3 below.
+
+2. **Use a local folder** — if you have a private/unlisted copy of the repo:
+   ```bash
+   defihunter wizard -r /path/to/private-protocol-repo
+   ```
+
+3. **Scrape a website** — no addresses either? Let recon find them on the
+   protocol's site, then paste the results into the wizard:
+   ```bash
+   defihunter recon scan --target sky.money --rpc "$DEFIHUNTER_RPC"
+   ```
+
+The rest of the flow (verify → preview → static/simulation → HTML report) is
+identical for all three sources.
+
 ## ⚠️ Legal Disclaimer
 
 **FOR AUTHORIZED SECURITY RESEARCH ONLY.**

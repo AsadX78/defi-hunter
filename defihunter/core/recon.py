@@ -77,19 +77,28 @@ class ReconScanner:
         """Filter addresses to only contracts"""
         contracts = {}
         for addr in addresses:
+            code = self._code_with_retry(addr)
+            if code:
+                name = run(f'cast call {addr} "name()(string)" --rpc-url {self.rpc_url} 2>/dev/null')
+                name = name.strip('"') if name and name != "0x" else "Unknown"
+                contracts[addr] = {
+                    "name": name,
+                    "code_size": len(code),
+                    "has_code": True,
+                }
+        return contracts
+
+    def _code_with_retry(self, addr: str, attempts: int = 3) -> str:
+        """eth_getCode via `cast code`, retrying on transient network/DNS
+        failures so flaky RPCs don't turn real contracts into 'no code'."""
+        for _ in range(attempts):
             try:
                 code = run(f'cast code {addr} --rpc-url {self.rpc_url} 2>/dev/null')
-                if code and code != "0x" and len(code) > 10:
-                    name = run(f'cast call {addr} "name()(string)" --rpc-url {self.rpc_url} 2>/dev/null')
-                    name = name.strip('"') if name and name != "0x" else "Unknown"
-                    contracts[addr] = {
-                        "name": name,
-                        "code_size": len(code),
-                        "has_code": True,
-                    }
-            except:
-                continue
-        return contracts
+            except Exception:
+                code = ""
+            if code and code != "0x" and len(code) > 10:
+                return code
+        return ""
     
     def get_contract_functions(self, address: str) -> List[str]:
         """Detect function signatures from bytecode"""

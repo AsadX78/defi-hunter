@@ -40,26 +40,29 @@ RECOMMENDED_ATTACKS = ["initialize", "admin", "mint", "inflation", "withdraw", "
 
 
 def ask_repo_url() -> str:
-    """Q1: GitHub repo (or local dir for testing)."""
+    """Q1: GitHub repo, local folder, or raw 0x addresses (no GitHub needed)."""
     ui.console.print()
     ui.console.print(ui.summary_panel([
         ("Step 1 of 5", "Protocol source"),
-        ("What we need", "A GitHub repo link where the protocol keeps its contracts/deployments"),
+        ("What we need", "A GitHub repo link, a local folder, OR 0x contract addresses"),
+        ("No GitHub?", "Paste addresses directly (comma/space separated), e.g. 0x6B17…,0xCdFd…"),
         ("Example", "https://github.com/Layr-Labs/eigenlayer-contracts"),
-    ], title="GitHub Repo"))
+    ], title="Protocol Source"))
     while True:
         answer = Prompt.ask(
-            "[step]GitHub repo URL[/]"
-            + " [muted](or local folder for testing)[/]"
+            "[step]GitHub repo URL, local folder, or addresses[/]"
+            + " [muted](comma/space separated)[/]"
         ).strip()
         if not answer:
-            ui.error("Empty input — paste the repo link.")
+            ui.error("Empty input — paste a repo link, a folder path, or addresses.")
             continue
         if github.is_repo_dir(answer):
             return answer
         if github.looks_like_git_url(answer):
             return answer
-        ui.warn("That doesn't look like a GitHub/git URL (e.g. https://github.com/owner/repo)")
+        if github.is_address_list(answer):
+            return answer
+        ui.warn("That doesn't look like a GitHub/git URL, a folder, or 0x addresses")
         if Confirm.ask("[warn]Continue anyway?[/]", default=False):
             return answer
 
@@ -241,7 +244,10 @@ def run_wizard(
     ui.rule("EXTRACTING CONTRACTS")
     with ui.spinner(f"Scanning {repo_url}"):
         try:
-            scan = github.scan_repo(repo_url, rpc_url=rpc)
+            if github.is_address_list(repo_url):
+                scan = github.scan_addresses(repo_url, rpc_url=rpc)
+            else:
+                scan = github.scan_repo(repo_url, rpc_url=rpc)
         except RuntimeError as e:
             ui.error(str(e))
             return
