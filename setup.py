@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="defi-hunter",
-    version="1.3.8",
+    version="1.3.9",
     author="DeFi Hunter Community",
     description="Open Source DeFi Security Analysis Toolkit",
     long_description=long_description,

@@ -447,3 +447,21 @@ def test_llama_scan_marks_anchor_identity_mismatch(monkeypatch):
     scan = wizard._scan_llama_protocol("llama:eigenlayer", rpc=None)
     entry = scan["contracts"]["0xec53bf9167f50cdeb3ae105f56099aaab9061f83"]
     assert entry["identity"] == "mismatch"
+
+
+def test_rate_limit_hint_without_token(monkeypatch):
+    """No token in the shell -> hint points at stale shell / missing export."""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    hint = wizard._rate_limit_hint()
+    assert "NEW terminal" in hint
+    assert "source ~/.zshrc" in hint
+
+
+def test_rate_limit_hint_with_token(monkeypatch):
+    """Token present but still refused -> hint points at token itself."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_x")
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    hint = wizard._rate_limit_hint()
+    assert "expired" in hint
+    assert "NEW terminal" not in hint

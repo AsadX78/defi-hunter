@@ -272,14 +272,27 @@ def _ask_org_repo(org: str) -> bool:
     )
 
 
+def _rate_limit_hint() -> str:
+    """Explain a failed GitHub org listing based on whether a token is loaded.
+
+    The most common cause is a stale shell: GITHUB_TOKEN lives in ~/.zshrc
+    but the running terminal predates the export, so the process never saw it.
+    """
+    if os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN"):
+        return ("GITHUB_TOKEN is set but GitHub still refused — the token may "
+                "be expired, revoked, or missing public-repo read access. "
+                "Paste a repo URL manually, or fix the token and retry.")
+    return ("No GITHUB_TOKEN in this shell. If you exported it in ~/.zshrc, "
+            "open a NEW terminal (or 'source ~/.zshrc'), or run: "
+            "export GITHUB_TOKEN=<token>. Until then, paste a repo URL manually.")
+
+
 def _pick_org_repo(org: str) -> Optional[str]:
     """List the org's repos, auto-rank by deployed-address likelihood, let the
     user pick one. Returns 'org/repo' or None."""
     repos = github.list_org_repos(org)
     if not repos:
-        ui.warn(f"Couldn't list repos for {org} (GitHub rate limit?). "
-                "Set GITHUB_TOKEN to raise the 60 req/hr cap, or paste a "
-                "repo URL manually.")
+        ui.warn(f"Couldn't list repos for {org}. {_rate_limit_hint()}")
         return None
     # Auto-detect which repos hold the deployed contract addresses, so the
     # user doesn't have to guess from names/descriptions.
