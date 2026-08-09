@@ -297,22 +297,24 @@ MEGA_BANNER = r"""
 
 
 def mega_banner(version: str = "") -> None:
-    """Print the DEFI HUNTER mega-banner with a per-line color gradient."""
+    """Print the DEFI HUNTER mega-banner with a per-line color gradient.
+
+    The panel hugs the artwork (expand=False) so it never balloons across a
+    wide terminal — the tagline lives inside the box as a footer line.
+    """
     lines = MEGA_BANNER.strip("\n").splitlines()
     n = len(lines)
-    body = Text(no_wrap=True, overflow="ignore")
+    body = Text()
     for i, line in enumerate(lines):
         color = GRADIENT[int(i * len(GRADIENT) / max(n, 1))]
-        body.append_text(Text(line, style=f"bold {color}", no_wrap=True,
-                              overflow="ignore"))
+        body.append_text(Text(line.rstrip(), style=f"bold {color}", no_wrap=True))
         body.append_text(Text("\n"))
     tag = Text("⚡ WORLD-CLASS DeFi ATTACK TOOLKIT", style="bold yellow",
                justify="center")
     if version:
         tag.append_text(Text(f"  ·  v{version}", style="muted"))
-    console.print(Panel(body, border_style="bright_red", box=box.DOUBLE,
-                        padding=(0, 1)))
-    console.print(tag)
+    console.print(Panel(Group(body, tag), border_style="bright_red",
+                        box=box.DOUBLE, expand=False, padding=(0, 1)))
     console.print()
 
 

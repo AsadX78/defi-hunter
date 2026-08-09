@@ -15,7 +15,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.14"
+__version__ = "1.3.15"
 
 
 def _banner():
@@ -37,7 +37,7 @@ def cli(ctx, config, verbose):
     # Bare `defihunter` (no subcommand) boots the interactive wizard.
     if ctx.invoked_subcommand is None:
         from defihunter.wizard import run_wizard
-        run_wizard(verbose=verbose)
+        run_wizard(verbose=verbose, version=__version__)
         ctx.exit(0)
     _banner()
 
@@ -50,7 +50,8 @@ def wizard(repo, check, attacks):
     """Interactive guided hunt: GitHub repo → contracts → vulnerability checks"""
     from defihunter.wizard import run_wizard
     attack_list = [a.strip() for a in attacks.split(',') if a.strip()] if attacks else None
-    run_wizard(verbose=False, repo_url=repo, check=check, attacks=attack_list)
+    run_wizard(verbose=False, repo_url=repo, check=check, attacks=attack_list,
+               version=__version__)
 
 
 @cli.group()
