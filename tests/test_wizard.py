@@ -404,3 +404,46 @@ def test_identity_match_detects_wrong_anchor():
 def test_identity_match_no_metadata():
     assert wizard.identity_match("sky", None, None) == "unknown"
     assert wizard.identity_match("", "Sky", "SKY") == "unknown"
+
+
+def test_llama_scan_marks_anchor_identity_match(monkeypatch):
+    """Verified anchors with matching name/symbol get identity='match'."""
+    from defihunter import wizard
+    from defihunter.core import protocols
+
+    monkeypatch.setattr(protocols, "resolve_protocol", lambda name: {
+        "name": "Sky", "url": "", "chains": ["Ethereum"],
+        "github_orgs": [],
+        "addresses": ["0x56072c95faa701256059aa122697b133aded9279"],
+    })
+    monkeypatch.setattr(wizard.github, "scan_addresses",
+                        lambda src, rpc_url=None: {
+                            "contracts": {"0x56072c95faa701256059aa122697b133aded9279": {
+                                "verified": True, "name": "SKY Governance Token",
+                                "symbol": "SKY"}},
+                            "total_addresses": 1, "repo_dir": "(addresses)"})
+    scan = wizard._scan_llama_protocol("llama:sky", rpc=None)
+    entry = scan["contracts"]["0x56072c95faa701256059aa122697b133aded9279"]
+    assert entry["identity"] == "match"
+
+
+def test_llama_scan_marks_anchor_identity_mismatch(monkeypatch):
+    """The eigenlayer->EigenCloud trap: token says EigenLayer, resolved says
+    EigenCloud -> identity flagged 'mismatch' instead of silently passing."""
+    from defihunter import wizard
+    from defihunter.core import protocols
+
+    monkeypatch.setattr(protocols, "resolve_protocol", lambda name: {
+        "name": "EigenCloud", "url": "", "chains": ["Ethereum"],
+        "github_orgs": [],
+        "addresses": ["0xec53bf9167f50cdeb3ae105f56099aaab9061f83"],
+    })
+    monkeypatch.setattr(wizard.github, "scan_addresses",
+                        lambda src, rpc_url=None: {
+                            "contracts": {"0xec53bf9167f50cdeb3ae105f56099aaab9061f83": {
+                                "verified": True, "name": "EigenLayer",
+                                "symbol": "EIGEN"}},
+                            "total_addresses": 1, "repo_dir": "(addresses)"})
+    scan = wizard._scan_llama_protocol("llama:eigenlayer", rpc=None)
+    entry = scan["contracts"]["0xec53bf9167f50cdeb3ae105f56099aaab9061f83"]
+    assert entry["identity"] == "mismatch"

@@ -374,12 +374,15 @@ def _scan_llama_protocol(source: str, rpc: Optional[str]) -> Dict:
             t.add_row(addr, str(name), str(symbol or "—"),
                       Text(v_txt, style=v_style))
         ui.console.print(t)
-        if any(e.get("identity") == "mismatch" for e in verified_anchors.values()):
+        verdicts = [e.get("identity") for e in verified_anchors.values()]
+        if "mismatch" in verdicts:
             ui.warn("Anchor identity doesn't match the resolved protocol name. "
                     "DefiLlama may have mapped a different protocol (e.g. a "
                     "same-name fork) — double-check before trusting the sims.")
-        else:
+        elif "match" in verdicts:
             ui.ok("Anchor identity confirmed on-chain.")
+        else:
+            ui.info("Anchors expose no ERC20 metadata — proceeding on code check only.")
 
     # Depth: the anchor is often just the token — offer to scan a real repo.
     if orgs and _ask_org_repo(orgs[0]):
