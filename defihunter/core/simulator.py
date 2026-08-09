@@ -479,6 +479,19 @@ class ForkSimulator:
         # anvil_setBalance returns JSON 'null' on success — exit code is the truth.
         return proc.returncode == 0
 
+    def _has_code(self) -> bool:
+        """True when the target actually has bytecode on this fork.
+
+        Calling initialize()/mint() on an EOA or a devnet-only address that
+        does not exist on mainnet MINES VACUOUSLY (plain value transfer) —
+        without this check a phantom address would be reported EXPLOITABLE.
+        """
+        proc = subprocess.run(
+            ["cast", "code", self._target, "--rpc-url", self.rpc_url_local],
+            capture_output=True, text=True, timeout=30)
+        out = proc.stdout.strip().lower()
+        return bool(out and out not in ("0x", "0x0"))
+
     def _send(self, selector: str, args: List[str]) -> Dict:
         """A REAL state-changing tx from the attacker account (fork-local)."""
         if not self._fund_attacker():
@@ -504,6 +517,17 @@ class ForkSimulator:
                     "target": target, "source_finding": source_finding}
         self._target = target
         steps: List[Dict] = []
+
+        if not self._has_code():
+            # No bytecode at the target on this fork: the address does not
+            # exist on this network (devnet-only deploy, placeholder, EOA).
+            # Any tx/call would mine vacuously — NOT evidence of exploitability.
+            return {"success": False, "attack": attack, "target": target,
+                    "steps": [{"step": "code check",
+                               "value": "no code at address on this fork"}],
+                    "evidence": ("target has no bytecode on this fork "
+                                 "(not a live contract on this network)"),
+                    "source_finding": source_finding}
 
         if attack == "mint":
             r = self._send("mint(address,uint256)", [self.attacker, "1000000"])

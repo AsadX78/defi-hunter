@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.20"
+__version__ = "1.3.21"
 
 
 def _banner():
@@ -249,7 +249,7 @@ def repo(ctx, target, rpc, as_json, no_fork):
         # Minimal contract map for file->address resolution (best effort).
         from defihunter.core.github import extract_addresses
         contracts = {addr: info for addr, info in extract_addresses(Path(repo_dir)).items()}
-        fork_results = _run_fork_verify(findings, contracts, rpc)
+        fork_results = _run_fork_verify(findings, contracts, rpc, repo_dir=repo_dir)
 
     if as_json and findings:
         import json as _json

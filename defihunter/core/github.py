@@ -7,6 +7,7 @@ contract addresses that `analyze` / `simulate` can then attack.
 from __future__ import annotations
 
 import os
+import json
 import re
 import shutil
 import subprocess
@@ -392,6 +393,112 @@ def clone(repo_url: str, attempts: int = 2) -> Path:
     raise RuntimeError(
         f"Could not clone {repo_url}: {last_err}"
     )
+
+
+def _norm_name(name: str) -> str:
+    """Normalize a contract name for matching: StrategyManager / strategyManager /
+    strategy_manager all collapse to 'strategymanager'."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+# Keys in deployment JSONs that denote an address's ROLE rather than the
+# contract's NAME (core.strategyManager.impl → name=strategyManager, role=impl).
+_DEPLOY_ROLES = {"proxy", "impl", "implementation", "pendingimpl", "logic"}
+
+# Artifacts for non-mainnet networks must not shadow real deployed addresses.
+_SKIP_DEPLOY_PATH_PARTS = {"devnet", "testnet", "localhost", "anvil", "local",
+                           "test", "mock", "zipzoop", "holesky", "goerli",
+                           "sepolia", "zktest", "31337"}
+
+_ZERO_ADDR = "0x" + "0" * 40
+
+
+def _is_deployable_path(path: Path) -> bool:
+    parts = {p.lower() for p in path.parts}
+    parts.add(path.stem.lower())  # zipzoop.json → zipzoop
+    return not (parts & _SKIP_DEPLOY_PATH_PARTS)
+
+
+def extract_deployments(repo_dir: Path) -> Dict[str, List[str]]:
+    """Map contract name → deployed addresses from repo deployment artifacts.
+
+    Static findings carry a *file* (StrategyManager.sol); fork verification
+    needs a *live address*. Repos ship that mapping in several layouts:
+
+      - eigenlayer-style  script/configs/*.json:
+            {"deployment": {"core": {"strategyManager": {"proxy": "0x…", "impl": "0x…"}}}}
+      - foundry          broadcast/**/run-latest.json:
+            transactions[] with {contractName, contractAddress}
+      - hardhat-deploy   deployments/**/<Name>.json:
+            {"address": "0x…"} (file name = contract name)
+
+    Returns {normalized_name: [addresses]} so a finding can be resolved by
+    contract name, falling back to the older file-mention mapping.
+    """
+    out: Dict[str, List[str]] = {}
+
+    def record(name: str, addr: str) -> None:
+        norm = _norm_name(name)
+        addr = (addr or "").lower()
+        if not norm or not addr.startswith("0x") or len(addr) != 42:
+            return
+        if addr == _ZERO_ADDR:
+            return  # pendingImpl / placeholder — not a live contract
+        lst = out.setdefault(norm, [])
+        if addr not in lst:
+            lst.append(addr)
+
+    def walk(obj, path: str = "") -> None:
+        """Recurse nested dicts; key paths like core.strategyManager.impl."""
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                walk(v, f"{path}.{k}" if path else str(k))
+        elif isinstance(obj, str) and obj.startswith("0x") and len(obj) == 42:
+            segs = [s for s in path.split(".") if s]
+            if not segs:
+                return
+            role = _norm_name(segs[-1])
+            name = segs[-2] if len(segs) >= 2 and role in _DEPLOY_ROLES else segs[-1]
+            record(name, obj)
+
+    # 1) eigenlayer-style config jsons (script/configs/*.json, *deploy*.json)
+    for pat in ("script/configs/*.json", "script/**/*deploy*.json",
+                "**/addresses.json", "**/*deployments*.json"):
+        for p in repo_dir.glob(pat):
+            if not _is_deployable_path(p) or p.stat().st_size > 5_000_000:
+                continue
+            try:
+                data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            walk(data.get("deployment", data))
+
+    # 2) foundry broadcast artifacts
+    for p in repo_dir.rglob("run-latest.json"):
+        if not _is_deployable_path(p):
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for tx in data.get("transactions", []) or []:
+            if tx.get("transactionType") not in ("CREATE", "CREATE2", None):
+                continue
+            if tx.get("contractName") and tx.get("contractAddress"):
+                record(tx["contractName"], tx["contractAddress"])
+
+    # 3) hardhat-deploy style deployments/<chain>/<Name>.json
+    for p in repo_dir.rglob("deployments/*/*.json"):
+        if not _is_deployable_path(p):
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("address"):
+            record(p.stem, data["address"])
+
+    return out
 
 
 def extract_addresses(repo_dir: Path) -> Dict[str, Dict[str, object]]:

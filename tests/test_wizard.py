@@ -1,4 +1,5 @@
 """Tests for the GitHub repo scanner + interactive wizard."""
+import json
 import pytest
 from pathlib import Path
 
@@ -681,3 +682,157 @@ def test_pick_org_repo_ranks_source_first_even_when_scoring_lower(monkeypatch):
 
     picked = wizard._pick_org_repo("Layr-Labs")
     assert picked == "Layr-Labs/eigenlayer-contracts"  # source first, not zeus
+
+
+class TestExtractDeployments:
+    """Deployment-artifact parsing: config, foundry broadcast, hardhat-deploy."""
+
+    def test_eigenlayer_config_layout(self, tmp_path):
+        from defihunter.core.github import extract_deployments
+        cfg = tmp_path / "script" / "configs"
+        cfg.mkdir(parents=True)
+        (cfg / "mainnet.json").write_text(json.dumps({
+            "config": {"environment": {"name": "mainnet"}},
+            "deployment": {
+                "core": {
+                    "strategyManager": {
+                        "proxy": "0x858646372CC42E1A627fcE94aa7A7033e7CF075A",
+                        "impl": "0x70f44c13944d49a236e3cd7a94f48f5dab6c619b",
+                    },
+                    "avsDirectory": {"proxy": "0x135dda560e946695d6f155dacafc6f1f25c1f5af"},
+                },
+                "token": {"eigen": {"impl": "0x1111111111111111111111111111111111111111"}},
+            },
+        }))
+        deps = extract_deployments(tmp_path)
+        assert "strategymanager" in deps
+        assert "0x858646372cc42e1a627fce94aa7a7033e7cf075a" in deps["strategymanager"]
+        assert "0x70f44c13944d49a236e3cd7a94f48f5dab6c619b" in deps["strategymanager"]
+        assert "eigen" in deps  # impl-only contract still resolved by name
+
+    def test_foundry_broadcast_layout(self, tmp_path):
+        from defihunter.core.github import extract_deployments
+        art = tmp_path / "broadcast" / "Deploy.s.sol" / "1"
+        art.mkdir(parents=True)
+        (art / "run-latest.json").write_text(json.dumps({
+            "transactions": [
+                {"transactionType": "CREATE", "contractName": "StrategyManager",
+                 "contractAddress": "0x858646372CC42E1A627fcE94aa7A7033e7CF075A"},
+                {"transactionType": "CALL", "contractName": "ProxyAdmin",  # ignored
+                 "contractAddress": "0x2222222222222222222222222222222222222222"},
+            ],
+        }))
+        deps = extract_deployments(tmp_path)
+        assert "strategymanager" in deps
+
+    def test_hardhat_deploy_layout(self, tmp_path):
+        from defihunter.core.github import extract_deployments
+        art = tmp_path / "deployments" / "mainnet"
+        art.mkdir(parents=True)
+        (art / "StrategyManager.json").write_text(json.dumps({
+            "address": "0x858646372CC42E1A627fcE94aa7A7033e7CF075A"}))
+        deps = extract_deployments(tmp_path)
+        assert deps.get("strategymanager") == ["0x858646372cc42e1a627fce94aa7a7033e7cf075a"]
+
+    def test_norm_name_collapses_case_and_separators(self):
+        from defihunter.core.github import _norm_name
+        assert _norm_name("StrategyManager") == "strategymanager"
+        assert _norm_name("strategyManager") == "strategymanager"
+        assert _norm_name("strategy_manager") == "strategymanager"
+        assert _norm_name("IAVSDirectory") == "iavsdirectory"
+
+    def test_zero_address_and_pendingimpl_placeholders_skipped(self, tmp_path):
+        from defihunter.core.github import extract_deployments
+        cfg = tmp_path / "script" / "configs"
+        cfg.mkdir(parents=True)
+        (cfg / "mainnet.json").write_text(json.dumps({
+            "deployment": {"core": {"strategyManager": {
+                "proxy": "0x858646372CC42E1A627fcE94aa7A7033e7CF075A",
+                "impl": "0x70f44c13944d49a236e3cd7a94f48f5dab6c619b",
+                "pendingImpl": "0x0000000000000000000000000000000000000000",
+                "notAnAddress": "0x1234",  # malformed → dropped
+            }}},
+        }))
+        deps = extract_deployments(tmp_path)
+        sm = deps.get("strategymanager", [])
+        assert "0x858646372cc42e1a627fce94aa7a7033e7cf075a" in sm
+        assert "0x70f44c13944d49a236e3cd7a94f48f5dab6c619b" in sm
+        assert len(sm) == 2  # zero + malformed placeholders excluded
+
+    def test_non_mainnet_artifacts_do_not_shadow_mainnet(self, tmp_path):
+        from defihunter.core.github import extract_deployments
+        cfg = tmp_path / "script" / "configs"
+        cfg.mkdir(parents=True)
+        (cfg / "mainnet.json").write_text(json.dumps({
+            "deployment": {"core": {"strategyManager": {
+                "proxy": "0x858646372CC42E1A627fcE94aa7A7033e7CF075A"}}}}))
+        dev = tmp_path / "broadcast" / "Deploy.s.sol" / "31337"
+        dev.mkdir(parents=True)
+        (dev / "run-latest.json").write_text(json.dumps({
+            "transactions": [{"transactionType": "CREATE",
+                              "contractName": "StrategyManager",
+                              "contractAddress": "0x9999999999999999999999999999999999999999"}]}))
+        # testnet config whose FILENAME itself is the network tag (zipzoop.json)
+        (cfg / "zipzoop.json").write_text(json.dumps({
+            "deployment": {"core": {"strategyManager": {
+                "proxy": "0x8888888888888888888888888888888888888888"}}}}))
+        deps = extract_deployments(tmp_path)
+        assert "0x9999999999999999999999999999999999999999" not in deps.get("strategymanager", [])
+        assert "0x8888888888888888888888888888888888888888" not in deps.get("strategymanager", [])
+        assert "0x858646372cc42e1a627fce94aa7a7033e7cf075a" in deps["strategymanager"]
+
+
+class TestForkVerifyDeploymentResolution:
+    """Findings resolve to live addresses by CONTRACT NAME, not just file mentions."""
+
+    def test_resolves_via_deployment_artifacts(self, tmp_path, monkeypatch):
+        from defihunter import wizard
+        # fake repo with a deployment config (the eigenlayer layout)
+        cfg = tmp_path / "script" / "configs"
+        cfg.mkdir(parents=True)
+        (cfg / "mainnet.json").write_text(json.dumps({
+            "deployment": {"core": {"strategyManager": {
+                "proxy": "0x858646372CC42E1A627fcE94aa7A7033e7CF075A"}}},
+        }))
+        finding = {
+            "severity": "HIGH", "title": "initialize() without initializer guard",
+            "file": "src/contracts/core/StrategyManager.sol", "line": 57,
+            "attack": "initialize",
+        }
+
+        called = []
+        class FakeFork:
+            available = True
+            rpc_url = "http://127.0.0.1:8545"
+            why_not = ""
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def run(self, attack, target, source_finding=None):
+                called.append(target)
+                return {"success": True, "attack": attack, "target": target,
+                        "source_finding": source_finding}
+
+        monkeypatch.setattr(wizard, "ForkSimulator", lambda rpc_url=None: FakeFork())
+        from rich.console import Console
+        import io
+        monkeypatch.setattr(wizard.ui, "console",
+                            Console(file=io.StringIO(), force_terminal=False,
+                                    color_system=None, width=120,
+                                    theme=wizard.ui.THEME))
+        monkeypatch.setattr(wizard.ui, "rule", lambda *a, **k: None)
+        monkeypatch.setattr(wizard.ui, "info", lambda *a, **k: None)
+        monkeypatch.setattr(wizard.ui, "warn", lambda *a, **k: None)
+        results = wizard._run_fork_verify(
+            [finding], {}, "https://example.com/rpc", repo_dir=str(tmp_path))
+        assert len(results) == 1 and results[0]["success"]
+        assert called == ["0x858646372cc42e1a627fce94aa7a7033e7cf075a"]
+
+    def test_skip_when_no_deployment_match(self, tmp_path, monkeypatch):
+        from defihunter import wizard
+        finding = {
+            "severity": "HIGH", "title": "mint() without visible access control",
+            "file": "src/contracts/core/StrategyManager.sol", "line": 10,
+            "attack": "mint",
+        }
+        results = wizard._run_fork_verify([finding], {}, None, repo_dir=str(tmp_path))
+        assert results == []

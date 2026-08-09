@@ -287,14 +287,19 @@ def _print_attack_routes(findings: List[Dict]) -> None:
 
 
 def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
-                     rpc: Optional[str]) -> List[Dict]:
+                     rpc: Optional[str], repo_dir: Optional[str] = None) -> List[Dict]:
     """Prove the callable-by-anyone findings on a real anvil fork.
 
     Static analysis says *possible*; an eth_call from an attacker account on
     a mainnet fork says *provable*. The source findings carry a relative file
-    path — the recon scan recorded which file each deployed address was
-    declared in, so we can map file:line findings back to live addresses and
-    actually call them on the fork.
+    path, so we resolve them to live addresses two ways:
+
+      1. recon source-mention mapping: which deployed address was declared in
+         the same file (works when the repo inlines addresses in source), and
+      2. deployment-artifact mapping (new): contract name → address from
+         script/configs/*.json, foundry broadcast/run-latest.json and
+         hardhat-deploy deployments/ — the layouts that actually ship live
+         mainnet addresses (e.g. eigenlayer's mainnet.json deployment map).
     """
     ui.rule("FORK VERIFICATION")
     verifiable = [f for f in findings if f.get("attack") in ("mint", "initialize", "delegatecall")]
@@ -302,20 +307,38 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
         ui.info("No callable-by-anyone findings (mint/initialize/delegatecall) to fork-verify.")
         return []
 
-    # file (repo-relative) -> deployed addresses that mention it in source
+    # 1) file (repo-relative) -> deployed addresses that mention it in source
     by_file: Dict[str, List[str]] = {}
     for addr, info in contracts.items():
         for src in info.get("sources") or []:
             by_file.setdefault(str(src), []).append(addr)
+
+    # 2) contract name -> deployed addresses from deployment artifacts
+    deployments: Dict[str, List[str]] = {}
+    if repo_dir and Path(repo_dir).is_dir():
+        deployments = github.extract_deployments(Path(repo_dir))
+        if deployments:
+            ui.info(f"Resolved {len(deployments)} contract(s) to live address(es) "
+                    "from deployment artifacts (configs/broadcast/deployments).")
+
     resolved = []
     for f in verifiable:
         fname = str(f.get("file", ""))
         addrs = sorted(set(by_file.get(fname, [])))
-        for addr in addrs[:3]:  # cap: 3 deployments per finding
+        norm = github._norm_name(Path(fname).stem)
+        addrs += deployments.get(norm, [])
+        # strip dupes, keep order, cap at 3 deployments per finding
+        seen, ordered = set(), []
+        for a in addrs:
+            a = a.lower()
+            if a not in seen:
+                seen.add(a)
+                ordered.append(a)
+        for addr in ordered[:3]:
             resolved.append((f, addr))
     if not resolved:
-        ui.info("No deployed addresses found for the flagged files — fork "
-                "verification needs a live address to call.")
+        ui.info("No deployed addresses found for the flagged files or their "
+                "contract names — fork verification needs a live address to call.")
         return []
 
     results: List[Dict] = []
@@ -324,7 +347,7 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
             if not fork.available:
                 ui.warn(fork.why_not)
                 return results
-            ui.info(f"Anvil fork live on {fork.rpc_url} — verifying {len(resolved)} file→address hit(s)")
+            ui.info(f"Anvil fork live on {fork.rpc_url} — verifying {len(resolved)} finding→address hit(s)")
             for f, addr in resolved:
                 res = fork.run(f["attack"], addr, source_finding=f)
                 results.append(res)
@@ -643,7 +666,8 @@ def run_wizard(
     if check in ("static", "both"):
         findings = _run_static(scan, contracts, rpc=rpc)
         if findings and not os.environ.get("DEFIHUNTER_SKIP_FORK"):
-            fork_results = _run_fork_verify(findings, contracts, rpc=rpc)
+            fork_results = _run_fork_verify(findings, contracts, rpc=rpc,
+                                            repo_dir=scan.get("repo_dir"))
     if check in ("simulate", "both"):
         sim_results = _run_simulate(contracts, attacks, rpc=rpc)
 

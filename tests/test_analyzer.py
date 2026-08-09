@@ -171,6 +171,16 @@ class TestForkSimulator:
         port = ForkSimulator._free_port()
         assert 0 < port < 65536
 
+    def test_run_rejects_no_code_target(self, monkeypatch):
+        """A tx to an address with no bytecode mines vacuously — never proof."""
+        fork = ForkSimulator(rpc_url="http://127.0.0.1:8545")
+        fork.available = True  # no real anvil needed; _has_code is stubbed
+        target = "0xdead00000000000000000000000000000000dead"
+        monkeypatch.setattr(fork, "_has_code", lambda: False)
+        res = fork.run("mint", target)
+        assert not res["success"]
+        assert "no bytecode" in res["evidence"]
+
 
 def _render(renderable) -> str:
     """Render any rich renderable to plain text for assertions."""
