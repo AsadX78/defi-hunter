@@ -318,6 +318,77 @@ def mega_banner(version: str = "") -> None:
     console.print()
 
 
+def intro(version: str = "") -> None:
+    """Full-screen animated boot intro (terminal only).
+
+    Sequence:
+        1. RADAR — spinning target-acquisition sweep
+        2. REVEAL — the DEFI HUNTER block art draws line-by-line under a
+           bright scanline while status messages cycle
+        3. HOLD — full artwork, then the boxed static banner with tagline
+
+    Degrades to a plain static banner when stdout isn't a terminal
+    (pipes/tests/CI) or when DEFIHUNTER_NO_INTRO=1 is set — the wizard never
+    blocks on animation.
+    """
+    import os as _os
+    import time as _time
+
+    if not console.is_terminal or _os.environ.get("DEFIHUNTER_NO_INTRO"):
+        mega_banner(version)
+        return
+
+    from rich.live import Live
+
+    lines = MEGA_BANNER.strip("\n").splitlines()
+    n = len(lines)
+    radar = ["◐", "◓", "◑", "◒"]
+    statuses = ["ACQUIRING TARGET", "ANALYZING ATTACK SURFACE",
+                "ARMING FORK SIMULATOR", "HUNTING MODE: ENGAGED"]
+    art_width = max(len(l.rstrip()) for l in lines)
+
+    def frame_text(revealed: int, status: str) -> Text:
+        body = Text()
+        for j in range(n):
+            color = GRADIENT[int(j * len(GRADIENT) / max(n, 1))]
+            line = lines[j].rstrip()
+            if j < revealed:
+                body.append_text(Text(line, style=f"bold {color}", no_wrap=True))
+            else:
+                body.append_text(Text(line, style="dim", no_wrap=True))
+            body.append_text(Text("\n"))
+        body.append_text(Text("▂" * art_width, style="bright_yellow", no_wrap=True))
+        body.append_text(Text("\n"))
+        body.append_text(Text(status, style="bold bright_red", justify="center"))
+        return body
+
+    t0 = _time.time()
+    with Live(console=console, refresh_per_second=30, transient=True,
+              vertical_overflow="visible") as live:
+        # 1. radar sweep (~0.9s)
+        while _time.time() - t0 < 0.9:
+            frame = radar[int((_time.time() - t0) * 30) % len(radar)]
+            live.update(Group(
+                Text(f"{frame}  TARGET ACQUISITION", style="bold bright_red",
+                     justify="center"),
+                Text("sweeping attack surface…", style="dim", justify="center"),
+            ))
+            _time.sleep(1 / 30)
+        # 2. line-by-line reveal (~0.13s/line)
+        t1 = _time.time()
+        revealed = 0
+        while revealed < n:
+            revealed = min(n, int((_time.time() - t1) / 0.13))
+            status = statuses[min(revealed, len(statuses) - 1)]
+            live.update(frame_text(revealed, status))
+            _time.sleep(1 / 30)
+        # final full frame, held a beat
+        live.update(frame_text(n, statuses[-1]))
+        _time.sleep(0.6)
+    # final static, boxed banner for the wizard to continue under
+    mega_banner(version)
+
+
 def threat_level(findings: Sequence[Dict[str, Any]]) -> str:
     """Map findings to a threat level (CRITICAL/HIGH/MODERATE/LOW/CLEAN)."""
     if not findings:

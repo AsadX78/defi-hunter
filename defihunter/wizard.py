@@ -530,10 +530,7 @@ def run_wizard(
     version: str = "",
 ) -> None:
     """Boot the guided hunt. Pass repo_url/check/attacks to skip those prompts."""
-    if ui.console.is_terminal:
-        ui.mega_banner(version)
-    else:
-        ui.banner()
+    ui.intro(version)
 
     # --- 1. Repo -----------------------------------------------------------
     if repo_url:

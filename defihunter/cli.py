@@ -3,6 +3,7 @@
 
 import click
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.15"
+__version__ = "1.3.16"
 
 
 def _banner():
@@ -28,12 +29,15 @@ def _banner():
 @click.version_option(__version__)
 @click.option('--config', '-c', type=click.Path(), help='Config file')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
+@click.option('--no-intro', is_flag=True, help='Skip the animated boot intro')
 @click.pass_context
-def cli(ctx, config, verbose):
+def cli(ctx, config, verbose, no_intro):
     """DeFi Hunter — Open Source DeFi Security Toolkit"""
     ctx.ensure_object(dict)
     ctx.obj['config'] = load_config(config)
     ctx.obj['verbose'] = verbose
+    if no_intro:
+        os.environ['DEFIHUNTER_NO_INTRO'] = '1'
     # Bare `defihunter` (no subcommand) boots the interactive wizard.
     if ctx.invoked_subcommand is None:
         from defihunter.wizard import run_wizard

@@ -4,6 +4,7 @@ import textwrap
 
 import pytest
 
+from defihunter import ui
 from defihunter.core.analyzer import (
     SEVERITY_ORDER,
     _iter_sol_files,
@@ -275,3 +276,67 @@ class TestForkProofHelpers:
         monkeypatch.setattr(subprocess, "run", fake_run)
         fork = ForkSimulator(rpc_url="http://127.0.0.1:8545")
         assert not fork._fund_attacker()
+
+
+class TestIntro:
+    """Boot intro: animation on terminals, instant static elsewhere."""
+
+    @staticmethod
+    def _fake_console(tty: bool):
+        """Return (console, file) — output lands in the fake file, not stdout."""
+        import io
+        from rich.console import Console
+
+        class _TTY(io.StringIO):
+            def isatty(self):
+                return tty
+            def fileno(self):
+                raise io.UnsupportedOperation("no fileno")
+
+        f = _TTY()
+        console = Console(file=f, highlight=False, theme=ui.THEME,
+                          color_system=None)
+        return console, f
+
+    def test_static_when_not_terminal(self, monkeypatch):
+        console, f = self._fake_console(tty=False)
+        monkeypatch.setattr(ui, "console", console)
+        ui.intro("1.2.3")
+        out = f.getvalue()
+        assert "WORLD-CLASS" in out
+        assert "1.2.3" in out
+
+    def test_static_when_env_skip(self, monkeypatch):
+        console, f = self._fake_console(tty=True)
+        monkeypatch.setattr(ui, "console", console)
+        monkeypatch.setenv("DEFIHUNTER_NO_INTRO", "1")
+        ui.intro("4.5.6")
+        out = f.getvalue()
+        assert "WORLD-CLASS" in out
+        assert "4.5.6" in out
+
+    def test_animation_runs_to_completion(self, monkeypatch):
+        """Real animation path on a fake terminal. The clock is faked so the
+        ~1.5s of animation completes instantly; must end with the boxed
+        banner and never raise."""
+        import time as _time
+        console, f = self._fake_console(tty=True)
+        monkeypatch.setattr(ui, "console", console)
+        monkeypatch.delenv("DEFIHUNTER_NO_INTRO", raising=False)
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+            def __call__(self):
+                return self.now
+
+        clock = FakeClock()
+        monkeypatch.setattr(_time, "time", clock)
+        monkeypatch.setattr(_time, "sleep",
+                            lambda s: clock.__setattr__("now", clock.now + s))
+
+        ui.intro("7.8.9")
+        out = f.getvalue()
+        assert "WORLD-CLASS" in out
+        assert "7.8.9" in out
+
