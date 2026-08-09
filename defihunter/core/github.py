@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -128,8 +129,113 @@ def list_org_repos(org: str, attempts: int = 3, timeout: int = 30) -> List[Dict[
             "updated": (r.get("updated_at") or "")[:10],
             "stars": r.get("stargazers_count") or 0,
             "language": r.get("language") or "",
+            "default_branch": r.get("default_branch") or "main",
         })
     return repos
+
+
+def _github_get_json(url: str, attempts: int = 2, timeout: int = 10) -> Optional[Dict]:
+    """GET a GitHub API JSON endpoint with retries. None on failure."""
+    for _ in range(attempts):
+        try:
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException:
+            continue
+    return None
+
+
+def _github_get_text(
+    url: str, attempts: int = 2, timeout: int = 10, accept: str = "application/vnd.github.raw+json"
+) -> str:
+    """GET a GitHub API endpoint as raw text (used for READMEs)."""
+    for _ in range(attempts):
+        try:
+            resp = requests.get(url, timeout=timeout, headers={"Accept": accept})
+            resp.raise_for_status()
+            return resp.text
+        except requests.RequestException:
+            continue
+    return ""
+
+
+def _repo_ca_score(repo: Dict[str, object]) -> tuple:
+    """Score one repo (runs in a worker thread). Returns (name, score).
+
+    Uses ONLY the file tree — README fetching was dropped because it doubled
+    the GitHub API call count (30/menu) and the strong signals (deployments/,
+    broadcast/, script/output/, addresses.json, .sol) all live in the tree.
+    """
+    name = repo["name"]
+    branch = repo.get("default_branch") or "main"
+    tree = _github_get_json(
+        f"https://api.github.com/repos/{name}/git/trees/{branch}?recursive=1"
+    )
+    paths = [
+        t["path"] for t in (tree or {}).get("tree", [])
+        if isinstance(t, dict) and isinstance(t.get("path"), str)
+    ]
+    return name, score_repo_for_ca(paths, "")
+
+
+def score_repo_for_ca(paths: List[str], readme: str = "") -> int:
+    """Score how likely a repo is to contain deployed contract addresses.
+
+    Signals (heuristic, calibrated on real protocol repos):
+      deployments/ dir      +3   foundry broadcast/ artifacts  +2
+      script/output/        +2   addresses/deployed/contracts.json  +2
+      deploy/ dir           +1   foundry.toml                +1
+      any .sol file         +1   README contains 0x…40        +2
+    A repo with a real deployment layout scores >= 4; docs/tooling 0-2.
+    """
+    score = 0
+    has_sol = False
+    for path in paths:
+        if re.search(r"(^|/)deployments/", path):
+            score += 3
+        if re.search(r"(^|/)broadcast/", path):
+            score += 2
+        if re.search(r"(^|/)script/output/", path):
+            score += 2
+        if re.search(r"(^|/)(addresses|deployed|deployment|contracts)\.json$", path, re.IGNORECASE):
+            score += 2
+        if re.search(r"(^|/)deploy/", path):
+            score += 1
+        if re.search(r"(^|/)foundry\.toml$", path):
+            score += 1
+        if path.endswith(".sol"):
+            has_sol = True
+    if has_sol:
+        score += 1
+    if re.search(r"0x[a-fA-F0-9]{40}", readme or ""):
+        score += 2
+    return score
+
+
+# Per-repo-set cache so repeat menus cost 0 extra GitHub API calls.
+_detect_cache: Dict[frozenset, Dict[str, int]] = {}
+
+
+def detect_ca_repos(repos: List[Dict[str, object]], workers: int = 8) -> Dict[str, int]:
+    """Score each org repo for 'contains deployed contract addresses'.
+
+    One file-tree API call per repo (15 max), fetched **concurrently** with
+    short timeouts so a flaky network can't stall the menu (failures just
+    score 0). Results are cached per repo-set so the same org menu is free
+    afterwards. Returns {full_name: score} — used by the wizard to rank the
+    org repo menu so the user doesn't have to guess which repo holds the
+    deployed addresses.
+    """
+    key = frozenset(r["name"] for r in repos[:15])
+    if key in _detect_cache:
+        return _detect_cache[key]
+    scores: Dict[str, int] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for name, score in executor.map(_repo_ca_score, repos[:15]):
+            scores[name] = score
+    _detect_cache[key] = scores
+    return scores
 
 
 def clone(repo_url: str) -> Path:

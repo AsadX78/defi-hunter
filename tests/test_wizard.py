@@ -261,8 +261,11 @@ def test_llama_scan_merges_org_repo_when_picked(monkeypatch):
                         lambda org, attempts=3, timeout=30: [
                             {"name": "Layr-Labs/eigenlayer-contracts",
                              "description": "core", "updated": "2026-08-01",
-                             "stars": 100, "language": "Solidity"},
+                             "stars": 100, "language": "Solidity",
+                             "default_branch": "main"},
                         ])
+    monkeypatch.setattr(wizard.github, "detect_ca_repos",
+                        lambda repos: {"Layr-Labs/eigenlayer-contracts": 7})
     monkeypatch.setattr(wizard.github, "scan_repo", lambda url, rpc_url=None: {
         "contracts": {"0x39053d51b77dc0d36036fc1fcc8cb819df8ef37a": {"verified": True}},
         "total_addresses": 1, "repo_dir": "/tmp/x"})
@@ -275,3 +278,75 @@ def test_llama_scan_merges_org_repo_when_picked(monkeypatch):
     assert scan["total_addresses"] == 2  # anchor + repo's contracts merged
     assert "0x39053d51b77dc0d36036fc1fcc8cb819df8ef37a" in scan["contracts"]
     assert "Layr-Labs" in scan["repo_dir"]
+
+
+# --- deployed-address (CA) repo auto-detection ------------------------------
+
+
+def test_score_repo_for_ca_detects_deployment_layout():
+    """A foundry protocol repo with deployment artifacts scores high."""
+    paths = [
+        "script/output/mainnet/deployment_data.json",
+        "script/deploy/deploy_from_scratch.s.sol",
+        "script/configs/mainnet/mainnet-addresses.config.json",
+        "foundry.toml",
+        "src/DelegationManager.sol",
+    ]
+    readme = "Deployed contracts live at 0x39053D51B77DC0d36036Fc1fCc8Cb819df8Ef37A"
+    assert github.score_repo_for_ca(paths, readme) >= 4
+
+
+def test_score_repo_for_ca_plain_repo_scores_low():
+    """A docs/tooling repo without deployment files scores ~0."""
+    paths = ["src/main.rs", "Cargo.toml", "README.md", ".github/workflows/ci.yml"]
+    assert github.score_repo_for_ca(paths, "A challenge repo. No contracts.") < 4
+
+
+def test_detect_ca_repos_ranks_contract_repo_first(monkeypatch):
+    """detect_ca_repos scores each repo; failures degrade to 0."""
+    github._detect_cache.clear()
+    repos = [
+        {"name": "Layr-Labs/eigenlayer-contracts", "default_branch": "main"},
+        {"name": "Layr-Labs/lighter-prover-challenge", "default_branch": "main"},
+        {"name": "Layr-Labs/rate-limited", "default_branch": "main"},
+    ]
+
+    def fake_json(url, attempts=2, timeout=10):
+        if "eigenlayer-contracts" in url:
+            return {"tree": [
+                {"path": "script/output/mainnet/deployment_data.json"},
+                {"path": "src/DelegationManager.sol"},
+                {"path": "foundry.toml"},
+            ]}
+        return None  # lighter-prover + rate-limited: tree fetch fails
+
+    monkeypatch.setattr(github, "_github_get_json", fake_json)
+    scores = github.detect_ca_repos(repos)
+    assert scores["Layr-Labs/eigenlayer-contracts"] >= 4
+    assert scores["Layr-Labs/lighter-prover-challenge"] == 0
+    assert scores["Layr-Labs/rate-limited"] == 0  # network failure -> 0
+
+
+def test_detect_ca_repos_caches_results(monkeypatch):
+    """A repeated repo set is served from cache — zero extra API calls."""
+    github._detect_cache.clear()
+    repos = [{"name": "Layr-Labs/eigenlayer-contracts", "default_branch": "main"}]
+    calls = {"n": 0}
+
+    def fake_json(url, attempts=2, timeout=10):
+        calls["n"] += 1
+        return {"tree": [{"path": "src/DelegationManager.sol"}]}
+
+    monkeypatch.setattr(github, "_github_get_json", fake_json)
+    first = github.detect_ca_repos(repos)
+    assert calls["n"] == 1
+    second = github.detect_ca_repos(repos)  # cached
+    assert calls["n"] == 1
+    assert first == second
+
+
+def test_list_org_repos_includes_default_branch(monkeypatch):
+    payload = [_repo("Layr-Labs/eigenlayer-contracts", default_branch="master")]
+    monkeypatch.setattr(github.requests, "get", lambda url, timeout=30: FakeResp(payload))
+    repos = github.list_org_repos("Layr-Labs")
+    assert repos[0]["default_branch"] == "master"

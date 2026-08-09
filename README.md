@@ -70,7 +70,10 @@ Three ways to hunt a protocol that has no public repo:
    It resolves the anchor contract(s), website, chains, and GitHub org, then
    runs the normal flow. The anchor is often just the token — the wizard will
    offer to go deeper by scanning a repo from the protocol's GitHub org
-   (v1.3.5).
+   (v1.3.5). Repos are **auto-ranked** by how likely they are to contain the
+   deployed contract addresses (✓ badge for `deployments/`, `broadcast/`,
+   `script/output/`, `addresses.json` layouts — v1.3.6), so you don't have to
+   guess which repo holds the real contracts.
 
 2. **Paste 0x addresses directly** — skip the repo entirely:
    ```bash

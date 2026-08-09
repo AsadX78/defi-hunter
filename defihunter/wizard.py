@@ -247,20 +247,30 @@ def _ask_org_repo(org: str) -> bool:
 
 
 def _pick_org_repo(org: str) -> Optional[str]:
-    """List the org's repos, let the user pick one. Returns 'org/repo' or None."""
+    """List the org's repos, auto-rank by deployed-address likelihood, let the
+    user pick one. Returns 'org/repo' or None."""
     repos = github.list_org_repos(org)
     if not repos:
         ui.warn(f"Couldn't list repos for {org} (GitHub rate limit?). "
                 "Paste a repo URL manually instead.")
         return None
-    top = repos[:15]
+    # Auto-detect which repos hold the deployed contract addresses, so the
+    # user doesn't have to guess from names/descriptions.
+    with ui.spinner(f"Scanning {len(repos[:15])} repos for deployed addresses…"):
+        scores = github.detect_ca_repos(repos)
+    top = sorted(repos[:15], key=lambda r: -scores.get(r["name"], 0))
+    ca_count = sum(1 for r in top if scores.get(r["name"], 0) >= 4)
     ui.console.print()
     ui.console.print(ui.summary_panel([
-        (f"{i}. {r['name']}",
+        (f"{'✓' if scores.get(r['name'], 0) >= 4 else ' '} {i}. {r['name']}",
          f"{r['language']} · ★{r['stars']} · updated {r['updated']}"
          + (f" — {r['description']}" if r["description"] else ""))
         for i, r in enumerate(top, 1)
-    ], title=f"Repos in {org} (top {len(top)} by recency)"))
+    ], title=f"Repos in {org} (✓ = contains deployed addresses — auto-detected)"))
+    if ca_count:
+        ui.info(f"✓ marked {ca_count} repo(s) likely to contain the deployed "
+                "contract addresses (deployments/, broadcast/, addresses.json…). "
+                "Usually that's the one you want.")
     while True:
         ans = Prompt.ask(
             "[step]Pick a repo number[/] [muted](or 'skip')[/]", default="skip"

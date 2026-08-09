@@ -14,8 +14,8 @@ Usage:
 
 Author: DeFi Hunter Community
 License: MIT
-Version: 1.3.5
+Version: 1.3.6
 """
 
-__version__ = "1.3.5"
+__version__ = "1.3.6"
 __author__ = "DeFi Hunter Community"
