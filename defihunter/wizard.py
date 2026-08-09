@@ -46,15 +46,16 @@ def ask_repo_url() -> str:
         ("Step 1 of 5", "Protocol source"),
         ("What we need", "A GitHub repo link, a local folder, OR 0x contract addresses"),
         ("No GitHub?", "Paste addresses directly (comma/space separated), e.g. 0x6B17…,0xCdFd…"),
+        ("Only a name?", "Just type the protocol name (e.g. spark, aave, lido) — we resolve it via DefiLlama"),
         ("Example", "https://github.com/Layr-Labs/eigenlayer-contracts"),
     ], title="Protocol Source"))
     while True:
         answer = Prompt.ask(
-            "[step]GitHub repo URL, local folder, or addresses[/]"
+            "[step]GitHub repo URL, local folder, addresses, or protocol name[/]"
             + " [muted](comma/space separated)[/]"
         ).strip()
         if not answer:
-            ui.error("Empty input — paste a repo link, a folder path, or addresses.")
+            ui.error("Empty input — paste a repo link, a folder path, addresses, or a protocol name.")
             continue
         if github.is_repo_dir(answer):
             return answer
@@ -62,7 +63,14 @@ def ask_repo_url() -> str:
             return answer
         if github.is_address_list(answer):
             return answer
-        ui.warn("That doesn't look like a GitHub/git URL, a folder, or 0x addresses")
+        if answer.lower().startswith("llama:"):
+            return answer  # explicit protocol-name request (don't re-prefix)
+        if Confirm.ask(
+            f"[warn]Not a repo/folder/addresses — look up '{answer}' as a "
+            "protocol name on DefiLlama?[/]",
+            default=True,
+        ):
+            return f"llama:{answer}"
         if Confirm.ask("[warn]Continue anyway?[/]", default=False):
             return answer
 
@@ -222,6 +230,37 @@ def _run_simulate(contracts: Dict[str, Dict], attacks: List[str], rpc: Optional[
 # ---------------------------------------------------------------------------
 
 
+def _scan_llama_protocol(source: str, rpc: Optional[str]) -> Dict:
+    """Resolve 'llama:<name>' via DefiLlama and scan the anchor addresses."""
+    from defihunter.core import protocols
+
+    name = source.split(":", 1)[1].strip()
+    ui.info(f"Resolving '{name}' on DefiLlama…")
+    info = protocols.resolve_protocol(name)
+    if info is None:
+        raise RuntimeError(
+            f"Couldn't find '{name}' on DefiLlama. Try the exact protocol name "
+            "(e.g. spark, aave, lido, makerdao), or paste a repo/addresses instead."
+        )
+    ui.ok(f"Found: {info['name']}")
+    if info["url"]:
+        ui.info(f"Website: {info['url']}")
+    if info["chains"]:
+        ui.info("Chains: " + ", ".join(info["chains"]))
+    if info["github_orgs"]:
+        ui.info("GitHub: " + ", ".join(
+            f"https://github.com/{org}" for org in info["github_orgs"]))
+    if not info["addresses"]:
+        raise RuntimeError(
+            f"DefiLlama has no on-chain addresses for '{info['name']}'. "
+            "Check the protocol's GitHub (above) or paste addresses manually."
+        )
+    ui.info(f"Anchor address(es): {len(info['addresses'])}")
+    scan = github.scan_addresses(", ".join(info["addresses"]), rpc_url=rpc)
+    scan["repo_url"] = f"DefiLlama: {info['name']}"
+    return scan
+
+
 def run_wizard(
     verbose: bool = False,
     repo_url: Optional[str] = None,
@@ -244,7 +283,9 @@ def run_wizard(
     ui.rule("EXTRACTING CONTRACTS")
     with ui.spinner(f"Scanning {repo_url}"):
         try:
-            if github.is_address_list(repo_url):
+            if repo_url.startswith("llama:"):
+                scan = _scan_llama_protocol(repo_url, rpc)
+            elif github.is_address_list(repo_url):
                 scan = github.scan_addresses(repo_url, rpc_url=rpc)
             else:
                 scan = github.scan_repo(repo_url, rpc_url=rpc)
