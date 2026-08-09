@@ -51,6 +51,26 @@ def test_extract_addresses_skips_noise(fake_repo: Path):
     assert any("deployments" in s for s in found["0x39053d51b77dc0d36036fc1fcc8cb819df8ef37a"]["sources"])
 
 
+def test_extract_addresses_skips_sentinels_and_slots(tmp_path: Path):
+    """ETH sentinels, EIP-1967 storage slots, and bitmask constants are not contracts."""
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "MockPool.sol").write_text(
+        "// SparkPool v1\n"
+        "address constant ETH = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;\n"
+        "address constant NATIVE = 0xffffffffffffffffffffffffffffffffffffffff;\n"
+        "bytes32 private constant IMPL = 0x360894a13ba1a3210667c828492db98dca3e2076;\n"
+        "bytes32 private constant ADMIN = 0xb53127684a568b3173ae13b9f8a6016e243e63b6;\n"
+        "uint256 constant MASK = 0xfffffffffffffffffffffffffffffffffff00000;\n"
+        "address public pool = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;\n"
+        "address public zero = 0x0000000000000000000000000000000000000000;\n"
+    )
+    found = github.extract_addresses(repo)
+    # only the real WETH address survives
+    assert "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" in found
+    assert len(found) == 1
+
+
 def test_scan_repo_no_rpc(fake_repo: Path):
     scan = github.scan_repo(str(fake_repo), rpc_url=None)
     assert scan["total_addresses"] == 3

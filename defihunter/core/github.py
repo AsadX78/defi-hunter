@@ -31,6 +31,41 @@ VERIFY_LIMIT = 100  # cap on-chain `cast code` checks per scan
 
 TMP_ROOT = Path("/tmp/defi-hunter-repos")
 
+# 40-hex values that look like addresses but are NOT deployed contracts.
+# These appear constantly in protocol repos as sentinels / storage slots /
+# bitmask constants and would pollute the candidate list.
+NON_CONTRACT_ADDRESSES = {
+    "0x0000000000000000000000000000000000000000",  # address(0) placeholder
+    "0x0000000000000000000000000000000000000001",  # address(1)
+    "0xffffffffffffffffffffffffffffffffffffffff",  # ETH sentinel (Aave/Spark)
+    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",  # ETH sentinel
+    "0xb53127684a568b3173ae13b9f8a6016e243e63b6",  # EIP-1967 admin storage slot
+    "0x360894a13ba1a3210667c828492db98dca3e2076",  # EIP-1967 implementation slot
+    "0xfffffffffffffffffffffffffffffffffff00000",  # Aave health-factor bitmask
+    "0xffffffffffffffffffffffffff000000000fffff",  # Aave bitmask constant
+    "0x5555555555555555555555555555555555555555",  # bit pattern
+    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",  # bit pattern
+    "0x3333333333333333333333333333333333333333",  # bit pattern
+    "0xcccccccccccccccccccccccccccccccccccccccc",  # bit pattern
+}
+
+
+def is_non_contract_address(addr: str) -> bool:
+    """True for sentinel/slot/bitmask addresses that are never deployed."""
+    if addr in NON_CONTRACT_ADDRESSES:
+        return True
+    nibbles = addr[2:]
+    # All-nibble-equal patterns (0xffff…, 0x0000…, 0xaaaa…) are constants.
+    if len(set(nibbles)) == 1:
+        return True
+    # Mask-style constants (repeated f/0 runs with gaps), e.g. Spark's
+    # 0xffffffffffffffffffffff0000ffffffffffffff. Real deployed addresses
+    # almost never have ≥75% f-or-0 nibbles.
+    f0 = sum(1 for c in nibbles if c in "f0")
+    if f0 / len(nibbles) >= 0.75:
+        return True
+    return False
+
 
 def is_repo_dir(path: str) -> bool:
     """True if the string points at an existing local directory (for testing)."""
@@ -85,6 +120,8 @@ def extract_addresses(repo_dir: Path) -> Dict[str, Dict[str, object]]:
             continue
         for m in ADDR_RE.findall(text):
             addr = m.lower()
+            if is_non_contract_address(addr):
+                continue
             entry = found.setdefault(addr, {"sources": set(), "count": 0})
             entry["sources"].add(str(rel))
             entry["count"] += 1

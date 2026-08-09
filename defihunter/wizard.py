@@ -258,8 +258,11 @@ def run_wizard(
     if rpc:
         verified = {a: i for a, i in contracts.items() if i.get("verified")}
         if not verified:
-            ui.warn("None of the addresses have deployed code on this RPC — "
-                    "checks may be noisy. Continuing with all addresses.")
+            ui.warn("None of the addresses have deployed code on this RPC. "
+                    "Either the repo is testnet-only, or the RPC check failed "
+                    "(network/DNS hiccups make every address look like 'no code'). "
+                    "Verify with: cast code <addr> --rpc-url <rpc>. "
+                    "Continuing with all addresses.")
         else:
             ui.info(f"{len(verified)} verified contract(s) with code")
             contracts = verified
