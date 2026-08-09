@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.16"
+__version__ = "1.3.17"
 
 
 def _banner():
@@ -271,14 +271,14 @@ def repo(ctx, target, rpc, as_json, no_fork):
         "endpoint": r.get("target", ""),
     } for r in fork_results if r.get("success")]
     ui.console.print()
-    ui.console.print(ui.attack_surface_gauge(all_findings))
-    ui.console.print(ui.severity_chart(all_findings))
+    ui.console.print(ui.attack_surface_gauge(all_findings, analyzed=True))
+    ui.console.print(ui.severity_chart(all_findings, analyzed=True))
     ui.hunt_complete([
         ("repo", target),
         ("files analyzed", str(len({f['file'] for f in findings}))),
         ("findings", str(len(findings))),
         ("fork-verified", f"{len(fork_results)} run, {fork_ok} exploitable"),
-    ], level=ui.threat_level(all_findings))
+    ], level=ui.threat_level(all_findings, analyzed=True))
 
 
 @cli.group()

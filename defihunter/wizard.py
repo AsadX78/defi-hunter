@@ -207,9 +207,14 @@ def _run_static(scan: Dict, contracts: Dict[str, Dict], rpc: Optional[str] = Non
     with file:line evidence — no Etherscan key needed. Address-level analysis
     (Etherscan source) only kicks in for address-list scans, where there is
     no local source to read.
+
+    Sets scan["_analysis_status"] so the verdict can be honest: 'skipped'
+    when nothing was actually analyzed (never claim CLEAN on no data),
+    'clean' when analysis ran and found nothing, 'findings' otherwise.
     """
     ui.rule("STATIC ANALYSIS")
     findings: List[Dict] = []
+    scan["_analysis_status"] = "skipped"
 
     repo_dir = scan.get("repo_dir", "")
     local = Path(repo_dir).expanduser().resolve() if repo_dir else None
@@ -218,12 +223,22 @@ def _run_static(scan: Dict, contracts: Dict[str, Dict], rpc: Optional[str] = Non
             findings = analyze_repo_dir(str(local), repo_label=scan.get("repo_url", repo_dir))
         ui.info(f"Analyzed {len({f['file'] for f in findings})} source file(s) "
                 f"({len(findings)} hit(s))")
+        scan["_analysis_status"] = "findings" if findings else "clean"
         if findings:
             ui.console.print(ui.findings_table(findings, title="Source Findings"))
             _print_attack_routes(findings)
+        else:
+            ui.ok("No obvious vulnerabilities found in source.")
         return findings
 
     # Address-list fallback: no local source, use the Etherscan-backed analyzer.
+    import os as _os
+    if not _os.getenv("ETHERSCAN_API_KEY"):
+        ui.warn("No source to analyze: address-only scan without ETHERSCAN_API_KEY "
+                "and no repo clone. Set ETHERSCAN_API_KEY or scan a repo to get "
+                "real static findings — verdict will be INCONCLUSIVE, not CLEAN.")
+        return findings
+
     analyzer = ContractAnalyzer(rpc_url=rpc)
     progress, task = ui.progress_bar(len(contracts), "Analyzing contracts")
     with progress:
@@ -233,6 +248,7 @@ def _run_static(scan: Dict, contracts: Dict[str, Dict], rpc: Optional[str] = Non
                 f.setdefault("endpoint", addr)
             findings.extend(result)
             progress.advance(task)
+    scan["_analysis_status"] = "findings" if findings else "clean"
     if findings:
         ui.warn(f"{len(findings)} finding(s):")
         ui.console.print(ui.findings_table(findings))
@@ -640,10 +656,14 @@ def run_wizard(
         "title": f"fork-confirmed {r.get('attack', '')} on {r.get('target', '')[:12]}…",
         "endpoint": r.get("target", ""),
     } for r in fork_results if r.get("success")]
-    level = ui.threat_level(all_findings)
+    analyzed = scan.get("_analysis_status") != "skipped"
+    level = ui.threat_level(all_findings, analyzed=analyzed)
     ui.console.print()
-    ui.console.print(ui.attack_surface_gauge(all_findings))
-    ui.console.print(ui.severity_chart(all_findings))
+    ui.console.print(ui.attack_surface_gauge(all_findings, analyzed=analyzed))
+    ui.console.print(ui.severity_chart(all_findings, analyzed=analyzed))
+    if not analyzed:
+        ui.warn("Verdict is INCONCLUSIVE — no source was analyzed (no repo clone "
+                "and no ETHERSCAN_API_KEY). Re-run scanning a repo for a real verdict.")
     ui.hunt_complete([
         ("repo", scan.get("repo_url", repo_url)),
         ("addresses", str(scan["total_addresses"])),

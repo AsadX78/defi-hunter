@@ -274,7 +274,8 @@ def attack_summary(result: Dict[str, Any], attack: str, target: str) -> Panel:
 def summary_panel(rows: Iterable[tuple[str, str]], title: str = "Summary") -> Panel:
     """Key/value summary panel (used for verdicts, scan stats)."""
     lines = [Text(f"{k}: ", style="bold white") + Text(v) for k, v in rows]
-    return Panel(Group(*lines), title=title, border_style="cyan", box=box.ROUNDED)
+    return Panel(Group(*lines), title=title, border_style="cyan", box=box.ROUNDED,
+                 expand=False)
 
 
 # ---------------------------------------------------------------------------
@@ -389,10 +390,14 @@ def intro(version: str = "") -> None:
     mega_banner(version)
 
 
-def threat_level(findings: Sequence[Dict[str, Any]]) -> str:
-    """Map findings to a threat level (CRITICAL/HIGH/MODERATE/LOW/CLEAN)."""
+def threat_level(findings: Sequence[Dict[str, Any]], analyzed: bool = True) -> str:
+    """Map findings to a threat level.
+
+    Returns INCONCLUSIVE when there are no findings AND nothing was actually
+    analyzed — a security tool must never claim CLEAN on no data.
+    """
     if not findings:
-        return "CLEAN"
+        return "CLEAN" if analyzed else "INCONCLUSIVE"
     weight = 0
     for f in findings:
         sev = str(f.get("severity", "INFO")).upper()
@@ -410,21 +415,29 @@ def threat_level(findings: Sequence[Dict[str, Any]]) -> str:
 def threat_banner(level: str, extra: str = "") -> Panel:
     """Big kill-screen style threat-level banner."""
     glyph = {"CRITICAL": "☠️  ", "HIGH": "🔥 ", "MODERATE": "⚠️ ", "LOW": "🟡",
-             "CLEAN": "🛡️  "}.get(level, "❓")
+             "CLEAN": "🛡️  ", "INCONCLUSIVE": "❓ "}.get(level, "❓")
     colors = {"CRITICAL": "red", "HIGH": "bright_red", "MODERATE": "yellow",
-              "LOW": "bright_yellow", "CLEAN": "green"}
+              "LOW": "bright_yellow", "CLEAN": "green",
+              "INCONCLUSIVE": "bright_cyan"}
     style = colors.get(level, "white")
     header = Text(f"{glyph} THREAT LEVEL: {level}", style=f"bold white on {style}",
                   justify="center")
     lines = [header]
     if extra:
         lines.append(Text(extra, style="bold white", justify="center"))
-    return Panel(Group(*lines), border_style=style, box=box.DOUBLE)
+    return Panel(Group(*lines), border_style=style, box=box.DOUBLE, expand=False)
 
 
-def attack_surface_gauge(findings: Sequence[Dict[str, Any]]) -> Panel:
+def attack_surface_gauge(findings: Sequence[Dict[str, Any]],
+                         analyzed: bool = True) -> Panel:
     """0–10 attack-surface meter, drawn with unicode blocks."""
     if not findings:
+        if not analyzed:
+            body = Text("ATTACK SURFACE  ░░░░░░░░░░  N/A", style="bold bright_cyan")
+            sub = Text("no data — analysis skipped", style="bright_cyan",
+                       justify="center")
+            return Panel(Group(body, sub), title="EXPOSURE METER",
+                         border_style="bright_cyan", box=box.ROUNDED, expand=False)
         score, label = 0.0, "CLEAN"
     else:
         weight = sum({"CRITICAL": 10, "HIGH": 7, "MEDIUM": 4, "LOW": 2,
@@ -439,10 +452,11 @@ def attack_surface_gauge(findings: Sequence[Dict[str, Any]]) -> Panel:
     body = Text(f"ATTACK SURFACE  {bar}  {score:.1f}/10", style=f"bold {color}")
     sub = Text(f"threat: {label}", style=f"{color}", justify="center")
     return Panel(Group(body, sub), title="EXPOSURE METER", border_style=color,
-                 box=box.ROUNDED)
+                 box=box.ROUNDED, expand=False)
 
 
-def severity_chart(findings: Sequence[Dict[str, Any]]) -> Panel:
+def severity_chart(findings: Sequence[Dict[str, Any]],
+                   analyzed: bool = True) -> Panel:
     """Horizontal bar chart of findings by severity."""
     counts = {s: 0 for s in SEVERITY_ORDER}
     for f in findings:
@@ -463,9 +477,12 @@ def severity_chart(findings: Sequence[Dict[str, Any]]) -> Panel:
                      Text("█" * bar_len, style=color) +
                      Text(f" {c} ({c*100//total}%)", style="muted"))
     if not lines:
-        lines.append(Text("no findings — clean repo", style="green"))
+        if not analyzed:
+            lines.append(Text("no data — analysis skipped", style="bright_cyan"))
+        else:
+            lines.append(Text("no findings — clean repo", style="green"))
     return Panel(Group(*lines), title="FINDINGS BY SEVERITY", border_style="cyan",
-                 box=box.ROUNDED)
+                 box=box.ROUNDED, expand=False)
 
 
 def attack_flow(findings: Sequence[Dict[str, Any]],
@@ -512,14 +529,8 @@ def attack_flow(findings: Sequence[Dict[str, Any]],
             Text(route, style="accent"),
             Text(status, style=status_style),
         )
-    return Panel(table, title="ATTACK FLOW", border_style="magenta", box=box.DOUBLE)
-
-
-def hunt_complete(rows: Iterable[tuple[str, str]], level: str = "LOW") -> None:
-    """Final kill-screen: verdict header + key/value stats."""
-    console.print()
-    console.print(threat_banner(level, extra="TARGET ASSESSED · REPORT READY"))
-    console.print(ui_summary_table(rows, title="HUNT COMPLETE 🏆"))
+    return Panel(table, title="ATTACK FLOW", border_style="magenta", box=box.DOUBLE,
+                 expand=False)
 
 
 def ui_summary_table(rows: Iterable[tuple[str, str]], title: str = "Summary") -> Table:
@@ -531,3 +542,10 @@ def ui_summary_table(rows: Iterable[tuple[str, str]], title: str = "Summary") ->
     for k, v in rows:
         table.add_row(k, v)
     return table
+
+
+def hunt_complete(rows: Iterable[tuple[str, str]], level: str = "LOW") -> None:
+    """Final kill-screen: verdict header + key/value stats."""
+    console.print()
+    console.print(threat_banner(level, extra="TARGET ASSESSED · REPORT READY"))
+    console.print(ui_summary_table(rows, title="HUNT COMPLETE 🏆"))

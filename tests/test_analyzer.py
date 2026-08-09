@@ -340,3 +340,40 @@ class TestIntro:
         assert "WORLD-CLASS" in out
         assert "7.8.9" in out
 
+
+
+class TestInconclusiveVerdict:
+    """Never claim CLEAN on data that was never analyzed."""
+
+    def test_threat_level_inconclusive_when_not_analyzed(self):
+        assert ui.threat_level([], analyzed=False) == "INCONCLUSIVE"
+        assert ui.threat_level([], analyzed=True) == "CLEAN"
+        assert ui.threat_level([{"severity": "LOW"}], analyzed=False) == "LOW"
+
+    def test_gauge_inconclusive_renders_na(self):
+        text = _render(ui.attack_surface_gauge([], analyzed=False))
+        assert "N/A" in text
+        assert "skipped" in text
+        assert "0.0/10" not in text  # no fake CLEAN score
+
+    def test_chart_inconclusive_renders_skipped(self):
+        text = _render(ui.severity_chart([], analyzed=False))
+        assert "skipped" in text
+        assert "clean repo" not in text
+
+    def test_threat_banner_inconclusive(self):
+        text = _render(ui.threat_banner("INCONCLUSIVE"))
+        assert "INCONCLUSIVE" in text
+
+    def test_verdict_panels_hug_width(self):
+        """Verdict panels must not balloon to terminal width (expand=False)."""
+        from rich.console import Console
+        console = Console(width=160, force_terminal=False, color_system=None,
+                          theme=ui.THEME)
+        for panel in (ui.threat_banner("HIGH"),
+                      ui.attack_surface_gauge([{"severity": "HIGH"}]),
+                      ui.severity_chart([{"severity": "HIGH"}])):
+            with console.capture() as cap:
+                console.print(panel)
+            # rendered lines must be well under the 160-col console width
+            assert max(len(line) for line in cap.get().splitlines()) < 120
