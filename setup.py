@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="defi-hunter",
-    version="1.0.0",
+    version="1.1.0",
     author="DeFi Hunter Community",
     description="Open Source DeFi Security Analysis Toolkit",
     long_description=long_description,
@@ -32,6 +32,7 @@ setup(
         "click>=8.0",
         "requests>=2.28",
         "pyyaml>=6.0",
+        "rich>=13.0",
     ],
     extras_require={
         "dev": [
