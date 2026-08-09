@@ -187,7 +187,8 @@ def test_list_org_repos_filters_forks_and_archived(monkeypatch):
         _repo("Layr-Labs/old-tooling", archived=True),
         _repo("Layr-Labs/docs", language="Markdown"),
     ]
-    monkeypatch.setattr(github.requests, "get", lambda url, timeout=30: FakeResp(payload))
+    monkeypatch.setattr(github.requests, "get",
+                        lambda url, timeout=30, headers=None: FakeResp(payload))
     repos = github.list_org_repos("Layr-Labs")
     names = [r["name"] for r in repos]
     assert "Layr-Labs/eigenlayer-contracts" in names
@@ -198,7 +199,7 @@ def test_list_org_repos_filters_forks_and_archived(monkeypatch):
 
 
 def test_list_org_repos_network_failure_returns_empty(monkeypatch):
-    def boom(url, timeout=30):
+    def boom(url, timeout=30, headers=None):
         raise github.requests.RequestException("boom")
 
     monkeypatch.setattr(github.requests, "get", boom)
@@ -347,6 +348,36 @@ def test_detect_ca_repos_caches_results(monkeypatch):
 
 def test_list_org_repos_includes_default_branch(monkeypatch):
     payload = [_repo("Layr-Labs/eigenlayer-contracts", default_branch="master")]
-    monkeypatch.setattr(github.requests, "get", lambda url, timeout=30: FakeResp(payload))
+    monkeypatch.setattr(github.requests, "get",
+                        lambda url, timeout=30, headers=None: FakeResp(payload))
     repos = github.list_org_repos("Layr-Labs")
     assert repos[0]["default_branch"] == "master"
+
+
+def test_github_headers_without_token(monkeypatch):
+    """No token configured -> no Authorization header."""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    assert github._github_headers() == {}
+
+
+def test_github_headers_with_token(monkeypatch):
+    """GITHUB_TOKEN is sent as a Bearer Authorization header."""
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_123secret")
+    assert github._github_headers() == {"Authorization": "Bearer ghp_123secret"}
+
+
+def test_list_org_repos_sends_token_when_configured(monkeypatch):
+    """With GITHUB_TOKEN set, org listing sends the auth header."""
+    seen = {}
+
+    def capture(url, timeout=30, headers=None):
+        seen["headers"] = headers
+        return FakeResp([_repo("Layr-Labs/eigenlayer-contracts")])
+
+    monkeypatch.setattr(github.requests, "get", capture)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_123secret")
+    github.list_org_repos("Layr-Labs")
+    assert seen["headers"].get("Authorization") == "Bearer ghp_123secret"

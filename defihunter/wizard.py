@@ -252,7 +252,8 @@ def _pick_org_repo(org: str) -> Optional[str]:
     repos = github.list_org_repos(org)
     if not repos:
         ui.warn(f"Couldn't list repos for {org} (GitHub rate limit?). "
-                "Paste a repo URL manually instead.")
+                "Set GITHUB_TOKEN to raise the 60 req/hr cap, or paste a "
+                "repo URL manually.")
         return None
     # Auto-detect which repos hold the deployed contract addresses, so the
     # user doesn't have to guess from names/descriptions.

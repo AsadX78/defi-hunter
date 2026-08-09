@@ -6,6 +6,7 @@ contract addresses that `analyze` / `simulate` can then attack.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -101,6 +102,21 @@ def parse_address_list(value: str) -> List[str]:
     ]
 
 
+def _github_headers(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """HTTP headers for GitHub API calls.
+
+    Adds `Authorization: Bearer <token>` when GITHUB_TOKEN / GH_TOKEN is set
+    (raises the unauthenticated 60 req/hr cap to 5,000 req/hr). Returns only
+    the extra headers when no token is configured, so unauthenticated use is
+    unchanged.
+    """
+    headers = dict(extra or {})
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if token and token.strip():
+        headers["Authorization"] = f"Bearer {token.strip()}"
+    return headers
+
+
 def list_org_repos(org: str, attempts: int = 3, timeout: int = 30) -> List[Dict[str, object]]:
     """List a GitHub org's non-fork, non-archived repos, newest-updated first.
 
@@ -113,7 +129,7 @@ def list_org_repos(org: str, attempts: int = 3, timeout: int = 30) -> List[Dict[
     data = []
     for _ in range(attempts):
         try:
-            resp = requests.get(url, timeout=timeout)
+            resp = requests.get(url, timeout=timeout, headers=_github_headers())
             resp.raise_for_status()
             data = resp.json()
             break
@@ -138,7 +154,7 @@ def _github_get_json(url: str, attempts: int = 2, timeout: int = 10) -> Optional
     """GET a GitHub API JSON endpoint with retries. None on failure."""
     for _ in range(attempts):
         try:
-            resp = requests.get(url, timeout=timeout)
+            resp = requests.get(url, timeout=timeout, headers=_github_headers())
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException:
@@ -152,7 +168,9 @@ def _github_get_text(
     """GET a GitHub API endpoint as raw text (used for READMEs)."""
     for _ in range(attempts):
         try:
-            resp = requests.get(url, timeout=timeout, headers={"Accept": accept})
+            resp = requests.get(
+                url, timeout=timeout, headers=_github_headers({"Accept": accept})
+            )
             resp.raise_for_status()
             return resp.text
         except requests.RequestException:

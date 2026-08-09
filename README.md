@@ -75,6 +75,13 @@ Three ways to hunt a protocol that has no public repo:
    `script/output/`, `addresses.json` layouts — v1.3.6), so you don't have to
    guess which repo holds the real contracts.
 
+   The org-repo menu uses the unauthenticated GitHub API (60 req/hr). For
+   heavy use, set a token to lift the cap to 5,000 req/hr:
+   ```bash
+   export GITHUB_TOKEN=ghp_xxx   # or GH_TOKEN
+   defihunter wizard -r llama:spark
+   ```
+
 2. **Paste 0x addresses directly** — skip the repo entirely:
    ```bash
    defihunter wizard -r "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2,0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" -c both
