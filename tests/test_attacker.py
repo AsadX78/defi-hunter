@@ -65,10 +65,53 @@ class TestReentrancyProof:
         for s in res.get("steps", []):
             if "after seed → after drain" in s["step"]:
                 before, after = s["value"].split(" → ")
-                assert int(before, 16) > int(after, 16)
+                assert int(before) > int(after)   # cast balance = DECIMAL
                 break
         else:
             pytest.fail("no state-diff step in evidence")
+
+    def test_demo_accounting_is_exact(self):
+        """The drain must be a perfect ledger: victim loss == profit swept to
+        the attacker wallet, and nothing left in the attacker contract.
+        cast balance returns DECIMAL — parsing it as hex inflates values
+        16^18-fold and would break this (regression guard)."""
+        res = _demo()
+        # re-run the exact flow so we can read all three balances
+        with ForkSimulator(rpc_url=None) as fork:
+            import subprocess
+            from defihunter.core import attacker
+            rpc = fork.rpc_url_local
+            SINK = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+            vault = attacker.get_contract("SimpleVault")
+            v = fork._deploy(vault["bytecode"])["address"]
+            art = attacker.get_contract("ReentrancyAttacker")
+            payload = (fork._sig_selector("withdraw(uint256)")
+                       + fork._abi_encode(["uint256"], ["1"])[2:])
+            a = fork._deploy(art["bytecode"],
+                             ["address", "address", "bytes"],
+                             [v, SINK, payload])["address"]
+
+            def run(*args):
+                pr = subprocess.run(
+                    ["cast", *args, "--rpc-url", rpc],
+                    capture_output=True, text=True, timeout=90)
+                return pr.returncode, pr.stdout.strip()
+
+            def bal(ad):
+                return int(run("balance", ad)[1], 10)
+
+            run("send", "--unlocked", a, "depositIntoVictim()",
+                "--from", fork.attacker, "--value", "1ether")
+            seeded = bal(v)
+            s0 = bal(SINK)
+            run("send", "--unlocked", a, "go()",
+                "--from", fork.attacker, "--gas-limit", "30000000")
+            n = int(run("call", a, "reentries()")[1], 16)
+            victim_loss = seeded - bal(v)
+            sink_gain = bal(SINK) - s0
+            assert victim_loss == n + 1  # reentries + the initial payout call
+            assert sink_gain == victim_loss  # every wei lands in the wallet
+            assert bal(a) == 0  # attacker contract fully swept
 
     def test_prove_reentrancy_refutes_empty_target(self):
         """An address with no bytecode must NOT be reported exploitable."""

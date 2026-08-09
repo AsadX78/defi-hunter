@@ -745,8 +745,8 @@ class ForkSimulator:
         ]
         drained = False
         try:
-            n = int(reentries["stdout"] or "0", 16)
-            drained = chain_mined and n > 1 and int(after, 16) < int(seeded, 16)
+            n = int(reentries["stdout"] or "0", 16)          # cast call → hex
+            drained = chain_mined and n > 1 and int(after, 10) < int(seeded, 10)  # cast balance → decimal
         except Exception:
             drained = False
 
