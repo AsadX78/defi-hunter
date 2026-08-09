@@ -1,5 +1,6 @@
 """Tests for local config persistence (config.local.yaml) + RPC default resolution."""
 import os
+from pathlib import Path
 
 import pytest
 
@@ -68,3 +69,39 @@ def test_load_config_legacy_still_works():
     cfg = config.load_config()
     assert cfg["rpc"]["ethereum"]  # per-chain defaults still present
     assert config.get_rpc_url(cfg) == cfg["rpc"]["ethereum"]
+
+
+def test_home_config_used_from_any_cwd(tmp_path, monkeypatch):
+    """With no local config.local.yaml, resolution falls back to
+    $XDG_CONFIG_HOME/defi-hunter/config.yaml (home-anchored, works anywhere)."""
+    monkeypatch.delenv(config.CONFIG_ENV, raising=False)
+    monkeypatch.delenv("DEFIHUNTER_RPC", raising=False)
+    monkeypatch.delenv("RPC_URL", raising=False)
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    # Run from a random cwd with no config.local.yaml present
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    assert not Path("config.local.yaml").exists()
+    expected = xdg / "defi-hunter" / "config.yaml"
+    assert config.config_path() == expected
+
+    path = config.save_rpc("https://home.example/rpc")
+    assert path == expected
+    assert config.get_default_rpc() == "https://home.example/rpc"
+
+
+def test_repo_local_config_takes_priority(tmp_path, monkeypatch):
+    """A config.local.yaml in the CWD is still honored (legacy repo-local)."""
+    monkeypatch.delenv(config.CONFIG_ENV, raising=False)
+    monkeypatch.delenv("DEFIHUNTER_RPC", raising=False)
+    monkeypatch.delenv("RPC_URL", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.local.yaml").write_text("default_rpc: https://local.example/rpc\n")
+
+    assert config.config_path() == Path("config.local.yaml")
+    assert config.get_default_rpc() == "https://local.example/rpc"

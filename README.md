@@ -130,7 +130,8 @@ Instead of pasting your RPC URL on every hunt, save it once — the wizard
 pre-fills it from then on:
 
 ```bash
-# Save (stored in config.local.yaml — gitignored, never committed)
+# Save (stored in ~/.config/defi-hunter/config.yaml — outside the repo,
+# never committed; a legacy ./config.local.yaml in your CWD also works)
 defihunter config set-rpc "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
 
 # Check what's saved (keys are masked)
@@ -143,9 +144,10 @@ defihunter config clear-rpc
 The RPC default resolution is:
 
 1. `DEFIHUNTER_RPC` env var
-2. `default_rpc:` in `config.local.yaml` (the `set-rpc` command)
-3. `RPC_URL` env var
-4. built-in `https://eth.drpc.org`
+2. `./config.local.yaml` in your working directory (legacy, repo-local)
+3. `~/.config/defi-hunter/config.yaml` (created by `set-rpc`)
+4. `RPC_URL` env var
+5. built-in `https://eth.drpc.org`
 
 Free RPC options for the key you save: [Alchemy](https://dashboard.alchemy.com)
 (free tier, `https://eth-mainnet.g.alchemy.com/v2/<key>`),

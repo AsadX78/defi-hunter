@@ -70,11 +70,21 @@ def get_rpc_url(config: Dict[str, Any], chain: str = 'ethereum') -> str:
 # ---------------------------------------------------------------------------
 
 def config_path() -> Path:
-    """Path to the local config file. Overridable for tests via $DEFIHUNTER_CONFIG."""
+    """Resolve the local config file (works from any working directory).
+
+    1. $DEFIHUNTER_CONFIG override (tests use this)
+    2. ./config.local.yaml if present (legacy repo-local configs keep working)
+    3. ~/.config/defi-hunter/config.yaml (default — survives being run anywhere)
+    """
     override = os.getenv(CONFIG_ENV)
     if override:
         return Path(override)
-    return Path("config.local.yaml")
+    local = Path("config.local.yaml")
+    if local.exists():
+        return local
+    xdg = os.getenv("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "defi-hunter" / "config.yaml"
 
 
 def load_local_config() -> Dict[str, Any]:
