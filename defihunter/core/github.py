@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -256,23 +257,32 @@ def detect_ca_repos(repos: List[Dict[str, object]], workers: int = 8) -> Dict[st
     return scores
 
 
-def clone(repo_url: str) -> Path:
-    """Shallow-clone a git repo into the temp dir. Returns the repo root."""
+def clone(repo_url: str, attempts: int = 2) -> Path:
+    """Shallow-clone a git repo into the temp dir. Returns the repo root.
+
+    Retries once on failure: flaky DNS resolvers produce transient
+    'Could not resolve host' errors that vanish on retry. Only the final
+    failure raises, so a hiccup can't kill a hunt that's already partway.
+    """
     TMP_ROOT.mkdir(parents=True, exist_ok=True)
     name = re.sub(r"[^A-Za-z0-9_.-]", "_", repo_url.rstrip("/").split("/")[-1]) or "repo"
     dest = TMP_ROOT / name
-    if dest.exists():
-        shutil.rmtree(dest)
-    proc = subprocess.run(
-        ["git", "clone", "--depth", "1", "--quiet", repo_url, str(dest)],
-        capture_output=True, text=True, timeout=180,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"Could not clone {repo_url}: "
-            f"{(proc.stderr or proc.stdout).strip()}"
+    last_err = ""
+    for i in range(attempts):
+        if dest.exists():
+            shutil.rmtree(dest)
+        proc = subprocess.run(
+            ["git", "clone", "--depth", "1", "--quiet", repo_url, str(dest)],
+            capture_output=True, text=True, timeout=180,
         )
-    return dest
+        if proc.returncode == 0:
+            return dest
+        last_err = (proc.stderr or proc.stdout).strip()
+        if i < attempts - 1:
+            time.sleep(1.5 * (i + 1))  # 1.5s before the retry
+    raise RuntimeError(
+        f"Could not clone {repo_url}: {last_err}"
+    )
 
 
 def extract_addresses(repo_dir: Path) -> Dict[str, Dict[str, object]]:

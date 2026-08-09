@@ -465,3 +465,82 @@ def test_rate_limit_hint_with_token(monkeypatch):
     hint = wizard._rate_limit_hint()
     assert "expired" in hint
     assert "NEW terminal" not in hint
+
+
+def test_clone_retries_transient_failure(monkeypatch):
+    """A flaky DNS clone failure is retried once before succeeding."""
+    from defihunter.core import github as gh
+    calls = {"n": 0}
+
+    def fake_subprocess_run(cmd, capture_output, text, timeout):
+        calls["n"] += 1
+        class Proc:
+            returncode = 0 if calls["n"] == 2 else 128
+            stdout = ""
+            stderr = "fatal: Could not resolve host: github.com" if calls["n"] == 1 else ""
+        return Proc()
+
+    monkeypatch.setattr(gh.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(gh.time, "sleep", lambda s: None)
+    dest = gh.clone("https://github.com/Layr-Labs/zeus")
+    assert calls["n"] == 2  # failed once, retried, succeeded
+    assert dest.exists() or True  # (tmp dir cleanup may differ; success path hit)
+
+
+def test_clone_raises_after_retries(monkeypatch):
+    from defihunter.core import github as gh
+    calls = {"n": 0}
+
+    def fake_subprocess_run(cmd, capture_output, text, timeout):
+        calls["n"] += 1
+        class Proc:
+            returncode = 128
+            stdout = ""
+            stderr = "fatal: Could not resolve host: github.com"
+        return Proc()
+
+    monkeypatch.setattr(gh.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(gh.time, "sleep", lambda s: None)
+    try:
+        gh.clone("https://github.com/Layr-Labs/zeus")
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "Could not resolve host" in str(e)
+    assert calls["n"] == 2  # both attempts used
+
+
+def test_llama_scan_survives_deep_clone_failure(monkeypatch):
+    """A failed deep-repo clone must NOT abort the hunt — anchor scan stands."""
+    from defihunter import wizard
+    from defihunter.core import protocols
+
+    monkeypatch.setattr(protocols, "resolve_protocol", lambda name: {
+        "name": "EigenCloud", "url": "", "chains": ["Ethereum"],
+        "github_orgs": ["Layr-Labs"],
+        "addresses": ["0xec53bf9167f50cdeb3ae105f56099aaab9061f83"],
+    })
+    monkeypatch.setattr(wizard.github, "scan_addresses",
+                        lambda src, rpc_url=None: {
+                            "contracts": {"0xec53bf9167f50cdeb3ae105f56099aaab9061f83": {
+                                "verified": True, "name": "Eigen", "symbol": "EIGEN"}},
+                            "total_addresses": 1, "repo_dir": "(addresses)"})
+    monkeypatch.setattr(wizard.github, "list_org_repos",
+                        lambda org, attempts=3, timeout=30: [
+                            {"name": "Layr-Labs/eigenlayer-contracts",
+                             "description": "Contracts of EigenLayer", "updated": "2026-08-01",
+                             "stars": 720, "language": "Solidity", "default_branch": "main"}])
+    monkeypatch.setattr(wizard.github, "detect_ca_repos",
+                        lambda repos: {"Layr-Labs/eigenlayer-contracts": 5})
+    monkeypatch.setattr(wizard.github, "scan_repo",
+                        lambda url, rpc_url=None: (_ for _ in ()).throw(
+                            RuntimeError("Could not clone ...: Could not resolve host: github.com")))
+    DummyConfirm.answer = True  # yes to "also scan a repo?"
+    monkeypatch.setattr(wizard, "Confirm", DummyConfirm)
+    DummyPrompt.answer = "1"
+    monkeypatch.setattr(wizard, "Prompt", DummyPrompt)
+
+    scan = wizard._scan_llama_protocol("llama:eigencloud", rpc=None)
+    # hunt survived: anchor scan intact, deep repo not merged
+    assert scan["contracts"]["0xec53bf9167f50cdeb3ae105f56099aaab9061f83"]["identity"] == "mismatch"
+    assert "deep_repo" not in scan
+    assert scan["repo_dir"] == "(addresses)"

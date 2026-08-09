@@ -402,12 +402,19 @@ def _scan_llama_protocol(source: str, rpc: Optional[str]) -> Dict:
         repo = _pick_org_repo(orgs[0])
         if repo:
             ui.info(f"Also scanning https://github.com/{repo} …")
-            with ui.spinner(f"Scanning {repo}"):
-                deep = github.scan_repo(f"https://github.com/{repo}", rpc_url=rpc)
-            scan["contracts"].update(deep["contracts"])
-            scan["total_addresses"] += deep["total_addresses"]
-            scan["repo_dir"] = f"DefiLlama: {info['name']} + github.com/{repo}"
-            scan["deep_repo"] = repo
+            deep = None
+            try:
+                with ui.spinner(f"Scanning {repo}"):
+                    deep = github.scan_repo(f"https://github.com/{repo}", rpc_url=rpc)
+            except RuntimeError as e:
+                # transient clone/network failure — don't kill the hunt
+                ui.warn(f"Couldn't scan {repo} ({e}). Continuing with the "
+                        "anchor scan only.")
+            if deep:
+                scan["contracts"].update(deep["contracts"])
+                scan["total_addresses"] += deep["total_addresses"]
+                scan["repo_dir"] = f"DefiLlama: {info['name']} + github.com/{repo}"
+                scan["deep_repo"] = repo
     return scan
 
 
