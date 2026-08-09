@@ -327,11 +327,14 @@ def mega_banner(version: str = "") -> None:
         color = GRADIENT[int(i * len(GRADIENT) / max(n, 1))]
         body.append_text(Text(line.rstrip(), style=f"bold {color}", no_wrap=True))
         body.append_text(Text("\n"))
-    tag = Text("⚡ WORLD-CLASS DeFi ATTACK TOOLKIT", style="bold yellow",
+    tag = Text("⚡ WORLD RECORD DeFi ATTACK TOOLKIT 🥵", style="bold yellow",
                justify="center")
     if version:
         tag.append_text(Text(f"  ·  v{version}", style="muted"))
-    console.print(Panel(Group(body, tag), border_style="bright_red",
+    hook = Text("the only toolkit that fork-proves every HIGH finding "
+                "on a live mainnet clone", style="italic muted",
+                justify="center")
+    console.print(Panel(Group(body, tag, hook), border_style="bright_red",
                         box=box.DOUBLE, expand=False, padding=(0, 1)))
     console.print()
 
