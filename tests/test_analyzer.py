@@ -212,11 +212,13 @@ class TestForkSimulator:
             res = fork.run("mint", "0x1234")
             assert not res["success"]
 
-    def test_missing_rpc_degrades_gracefully(self, monkeypatch):
+    def test_blank_anvil_offline_chain(self, monkeypatch):
+        """rpc_url=None now boots a BLANK anvil chain (offline self-test /
+        drain demo). It must come up available without any mainnet RPC."""
         monkeypatch.setattr(ForkSimulator, "_has_tool", lambda self, name: True)
         with ForkSimulator(rpc_url=None) as fork:
-            assert not fork.available
-            assert "RPC" in fork.why_not
+            assert fork.available
+            assert not fork.why_not
 
     def test_free_port(self):
         port = ForkSimulator._free_port()

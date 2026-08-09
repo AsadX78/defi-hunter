@@ -364,7 +364,21 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
             ui.info(f"Anvil fork live on {fork.rpc_url} — verifying {len(resolved)} finding→address hit(s)")
             for f, addr in resolved:
                 abi = abi_util.fetch_abi(addr) or None
-                res = fork.run(f["attack"], addr, source_finding=f, abi=abi)
+                if f.get("attack") == "reentrancy":
+                    # One-block exploit chain: deploy a ReentrancyAttacker whose
+                    # fallback re-enters the victim's payout and double-drains.
+                    # Real contracts rarely have plain withdraw(uint256), so
+                    # fall back to the single-payout-call battery.
+                    res = fork.prove_reentrancy(addr)
+                    if not res.get("success"):
+                        res = fork.run(f["attack"], addr, source_finding=f, abi=abi)
+                        if res.get("success"):
+                            res["note"] = ("reentrancy window shown via single "
+                                           "payout call (attacker-contract drain "
+                                           "not demonstrated — payout signature "
+                                           "mismatch or guard present)")
+                else:
+                    res = fork.run(f["attack"], addr, source_finding=f, abi=abi)
                 results.append(res)
     ui.console.print(ui.attack_flow(findings, results))
     ok = sum(1 for r in results if r.get("success"))

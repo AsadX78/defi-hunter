@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.25"
+__version__ = "1.3.26"
 
 
 def _banner():
