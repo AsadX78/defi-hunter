@@ -15,6 +15,18 @@ DeFi Hunter is a comprehensive security analysis toolkit for DeFi protocols. It 
 - 🧪 **Simulation** — Runs attack simulations on forked mainnet state
 - 📊 **Reporting** — Generates professional HTML/JSON/Markdown reports
 
+## ✨ v1.1 — Rich Terminal UI
+
+The CLI now renders through a centralized `rich` UI layer (`defihunter/ui.py`):
+
+- 🎨 **ASCII banner + themed colors** (cyan/green/yellow/red severity palette)
+- 📋 **Tables** — contracts, findings (color-coded severity), and template library
+- ⏳ **Spinners & progress bars** for long-running scan/simulate/report operations
+- 🧾 **Result panels** — big success/failure panels for attack simulations
+- 🖥️ **Terminal-aware** — the banner is skipped when piping output (CI-friendly)
+
+All command names and options are unchanged from v1.0.
+
 ## ⚠️ Legal Disclaimer
 
 **FOR AUTHORIZED SECURITY RESEARCH ONLY.**
@@ -104,7 +116,8 @@ export ALCHEMY_KEY="your_key"
 
 ```
 defihunter/
-├── cli.py              # Click-based CLI
+├── cli.py              # Click-based CLI (renders via ui.py)
+├── ui.py               # Rich UI layer — banner, tables, panels, spinners, theme
 ├── core/
 │   ├── recon.py        # Contract discovery
 │   ├── analyzer.py     # Vulnerability detection
