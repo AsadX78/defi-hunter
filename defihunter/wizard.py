@@ -21,12 +21,10 @@ from typing import Dict, List, Optional
 from rich.prompt import Confirm, Prompt
 
 from defihunter import ui
-from defihunter.core import github
+from defihunter.core import config, github
 from defihunter.core.analyzer import ContractAnalyzer
 from defihunter.core.reporter import ReportGenerator
 from defihunter.core.simulator import AttackSimulator
-
-DEFAULT_RPC = "https://eth.drpc.org"
 
 ALL_ATTACKS = [
     "inflation", "admin", "governance", "oracle", "reentrancy", "bridge",
@@ -67,23 +65,33 @@ def ask_repo_url() -> str:
 
 
 def ask_rpc() -> Optional[str]:
-    """Q2: RPC URL. Reuse $RPC_URL if set, else prompt with a public default."""
+    """Q2: RPC URL. Reuse $RPC_URL if set, else prompt with the saved
+    default ($DEFIHUNTER_RPC > config.local.yaml > built-in default).
+    Newly entered URLs can be saved for future hunts."""
     env_rpc = os.getenv("RPC_URL")
     if env_rpc:
         ui.info(f"Using RPC_URL from environment: {env_rpc}")
         return env_rpc
+    saved_rpc = config.get_default_rpc()
+    is_saved = saved_rpc != config.DEFAULT_RPC
     ui.console.print()
     ui.console.print(ui.summary_panel([
         ("Why", "Lets us check which addresses are real contracts and pull names"),
         ("Tip", "Enter your own RPC for the protocol's chain (e.g. an Alchemy key)"),
+        ("Saved", f"Your saved RPC will be used as the default{'' if is_saved else ' (none yet — save one with: defihunter config set-rpc <url>)'}"),
         ("Skip", "Type 'skip' to list addresses without on-chain verification"),
     ], title="RPC Endpoint"))
     answer = Prompt.ask(
-        f"[step]RPC URL[/] [muted](Enter = {DEFAULT_RPC})[/]", default=DEFAULT_RPC
+        f"[step]RPC URL[/] [muted](Enter = {saved_rpc})[/]", default=saved_rpc
     ).strip()
     if answer.lower() in ("skip", "s", "none"):
         return None
-    return answer or DEFAULT_RPC
+    if answer and answer != saved_rpc:
+        # New custom URL — offer to persist it for future projects.
+        if Confirm.ask("[step]Save this RPC for future hunts?[/]", default=True):
+            path = config.save_rpc(answer)
+            ui.ok(f"Saved RPC to {path} — it will pre-fill next time.")
+    return answer or saved_rpc
 
 
 def ask_check_type() -> str:

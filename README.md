@@ -37,9 +37,11 @@ $ defihunter
 
   1. GitHub repo URL of the protocol
      → e.g. https://github.com/Layr-Labs/eigenlayer-contracts
-  2. RPC URL (Enter = eth.drpc.org, or type 'skip')
+  2. RPC URL (Enter = your saved RPC or eth.drpc.org, or type 'skip')
      → clones the repo, extracts every 0x…40 address, verifies which
        ones actually have deployed code on-chain
+     → a custom URL you enter can be saved for all future hunts
+       (see "Save your RPC once" below)
   3. Vulnerability check type
      → 1 = static analysis, 2 = attack simulation, 3 = both (recommended)
   4. Attack selection (for simulation) — pick from the 18 built-in attacks
@@ -122,9 +124,38 @@ defihunter templates list --type all
 defihunter templates verify
 ```
 
+### Save your RPC once, reuse forever (v1.3)
+
+Instead of pasting your RPC URL on every hunt, save it once — the wizard
+pre-fills it from then on:
+
+```bash
+# Save (stored in config.local.yaml — gitignored, never committed)
+defihunter config set-rpc "https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
+
+# Check what's saved (keys are masked)
+defihunter config show
+
+# Remove it (falls back to the free https://eth.drpc.org default)
+defihunter config clear-rpc
+```
+
+The RPC default resolution is:
+
+1. `DEFIHUNTER_RPC` env var
+2. `default_rpc:` in `config.local.yaml` (the `set-rpc` command)
+3. `RPC_URL` env var
+4. built-in `https://eth.drpc.org`
+
+Free RPC options for the key you save: [Alchemy](https://dashboard.alchemy.com)
+(free tier, `https://eth-mainnet.g.alchemy.com/v2/<key>`),
+[Infura](https://infura.io), [dRPC](https://drpc.org), or per-chain public
+endpoints from [Chainlist](https://chainlist.org).
+
 ### Environment Variables
 
 ```bash
+export DEFIHUNTER_RPC="https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
 export RPC_URL="https://eth-mainnet.galchemy.com/v2/YOUR_KEY"
 export ETHERSCAN_API_KEY="your_key"
 export ALCHEMY_KEY="your_key"

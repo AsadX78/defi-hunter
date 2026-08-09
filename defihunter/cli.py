@@ -15,7 +15,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 
 def _banner():
@@ -51,6 +51,56 @@ def wizard(repo, check, attacks):
     from defihunter.wizard import run_wizard
     attack_list = [a.strip() for a in attacks.split(',') if a.strip()] if attacks else None
     run_wizard(verbose=False, repo_url=repo, check=check, attacks=attack_list)
+
+
+@cli.group()
+def config():
+    """Save/clear your personal RPC URL (pre-fills the wizard prompt)"""
+
+
+@config.command('set-rpc')
+@click.argument('url')
+def config_set_rpc(url):
+    """Save an RPC URL for all future hunts (stored in config.local.yaml, gitignored)"""
+    from defihunter.core.config import save_rpc
+    path = save_rpc(url)
+    ui.rule("CONFIG")
+    ui.ok(f"Saved RPC → {path}")
+    ui.info("It will pre-fill the wizard's RPC prompt from now on.")
+
+
+@config.command('show')
+def config_show():
+    """Show the current saved RPC (API keys are masked)"""
+    from defihunter.core import config as cfg
+    ui.rule("CONFIG")
+    rpc = cfg.get_default_rpc()
+    if rpc == cfg.DEFAULT_RPC:
+        ui.info(f"Using built-in default: {rpc}")
+        ui.info("No personal RPC saved yet. Save one with: defihunter config set-rpc <url>")
+        return
+    ui.info(f"Saved RPC: {_mask_rpc(rpc)}")
+
+
+@config.command('clear-rpc')
+def config_clear_rpc():
+    """Remove your saved RPC (falls back to the public default)"""
+    from defihunter.core.config import clear_rpc
+    clear_rpc()
+    ui.rule("CONFIG")
+    ui.ok("Cleared saved RPC. The wizard will use https://eth.drpc.org again.")
+
+
+def _mask_rpc(url: str) -> str:
+    """Show scheme + host, mask the path tail if it looks like a secret."""
+    import re
+    m = re.match(r'(https?://[^/]+/)(.+)$', url)
+    if not m:
+        return url
+    scheme_host, tail = m.group(1), m.group(2)
+    if len(tail) >= 8:
+        return f"{scheme_host}{tail[:4]}{'*' * min(8, len(tail) - 4)}"
+    return url
 
 
 @cli.group()

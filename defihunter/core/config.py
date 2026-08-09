@@ -4,6 +4,9 @@ import yaml
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+DEFAULT_RPC = "https://eth.drpc.org"
+CONFIG_ENV = "DEFIHUNTER_CONFIG"  # optional override for the local config path (tests use this)
+
 DEFAULT_CONFIG = {
     'rpc': {
         'ethereum': 'https://rpc.ankr.com/eth',
@@ -60,3 +63,64 @@ def get_rpc_url(config: Dict[str, Any], chain: str = 'ethereum') -> str:
     
     # Then config
     return config.get('rpc', {}).get(chain, DEFAULT_CONFIG['rpc']['ethereum'])
+
+
+# ---------------------------------------------------------------------------
+# Local persistence (config.local.yaml — gitignored, machine-local)
+# ---------------------------------------------------------------------------
+
+def config_path() -> Path:
+    """Path to the local config file. Overridable for tests via $DEFIHUNTER_CONFIG."""
+    override = os.getenv(CONFIG_ENV)
+    if override:
+        return Path(override)
+    return Path("config.local.yaml")
+
+
+def load_local_config() -> Dict[str, Any]:
+    """Read config.local.yaml (missing/corrupt file -> empty dict)."""
+    path = config_path()
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except yaml.YAMLError:
+        return {}
+
+
+def save_local_config(data: Dict[str, Any]) -> Path:
+    """Write config.local.yaml, preserving any existing keys."""
+    path = config_path()
+    merged = dict(load_local_config())
+    merged.update(data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def get_default_rpc() -> str:
+    """Best RPC default for the wizard:
+    $DEFIHUNTER_RPC > config.local.yaml `default_rpc` > built-in default."""
+    env_rpc = os.getenv("DEFIHUNTER_RPC")
+    if env_rpc:
+        return env_rpc.strip()
+    cfg = load_local_config()
+    rpc = cfg.get("default_rpc")
+    if isinstance(rpc, str) and rpc.strip():
+        return rpc.strip()
+    return DEFAULT_RPC
+
+
+def save_rpc(url: str) -> Path:
+    """Persist an RPC URL for future hunts. Returns the config path written."""
+    return save_local_config({"default_rpc": url.strip()})
+
+
+def clear_rpc() -> None:
+    """Remove the saved RPC from config.local.yaml."""
+    path = config_path()
+    cfg = load_local_config()
+    if "default_rpc" in cfg:
+        del cfg["default_rpc"]
+        path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
