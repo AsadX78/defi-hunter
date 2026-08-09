@@ -12,6 +12,7 @@ through the whole hunt:
 from __future__ import annotations
 
 import json
+import subprocess
 import os
 import re
 from datetime import datetime
@@ -570,7 +571,7 @@ def run_wizard(
         else:
             with ui.spinner(f"Scanning {repo_url}"):
                 scan = github.scan_repo(repo_url, rpc_url=rpc)
-    except RuntimeError as e:
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
         ui.error(str(e))
         return
 

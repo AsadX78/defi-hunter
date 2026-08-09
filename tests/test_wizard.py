@@ -480,6 +480,7 @@ def test_clone_retries_transient_failure(monkeypatch):
             stderr = "fatal: Could not resolve host: github.com" if calls["n"] == 1 else ""
         return Proc()
 
+    monkeypatch.setattr(gh, "_try_tarball", lambda url, dest: False)
     monkeypatch.setattr(gh.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(gh.time, "sleep", lambda s: None)
     dest = gh.clone("https://github.com/Layr-Labs/zeus")
@@ -499,6 +500,7 @@ def test_clone_raises_after_retries(monkeypatch):
             stderr = "fatal: Could not resolve host: github.com"
         return Proc()
 
+    monkeypatch.setattr(gh, "_try_tarball", lambda url, dest: False)
     monkeypatch.setattr(gh.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(gh.time, "sleep", lambda s: None)
     try:
@@ -507,6 +509,52 @@ def test_clone_raises_after_retries(monkeypatch):
     except RuntimeError as e:
         assert "Could not resolve host" in str(e)
     assert calls["n"] == 2  # both attempts used
+
+
+def test_clone_falls_back_to_tarball(monkeypatch):
+    """When git clone fails, a github.com repo is rescued via codeload."""
+    from defihunter.core import github as gh
+    calls = {"n": 0}
+
+    def fake_subprocess_run(cmd, capture_output, text, timeout):
+        calls["n"] += 1
+        class Proc:
+            returncode = 128
+            stdout = ""
+            stderr = "fatal: Could not resolve host: github.com"
+        return Proc()
+
+    monkeypatch.setattr(gh.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(gh.time, "sleep", lambda s: None)
+
+    def fake_tarball(url, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "README.md").write_text("hi")
+        return True
+
+    monkeypatch.setattr(gh, "_try_tarball", fake_tarball)
+    dest = gh.clone("https://github.com/Layr-Labs/zeus")
+    assert calls["n"] == 1  # git tried once, then tarball rescued
+    assert (dest / "README.md").read_text() == "hi"
+
+
+def test_clone_converts_timeout_to_runtimeerror(monkeypatch):
+    """A git-clone timeout must surface as RuntimeError, not escape raw."""
+    from defihunter.core import github as gh
+    import subprocess
+
+    def boom(cmd, capture_output, text, timeout):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(gh, "_try_tarball", lambda url, dest: False)
+    monkeypatch.setattr(gh.subprocess, "run", boom)
+    monkeypatch.setattr(gh.time, "sleep", lambda s: None)
+    try:
+        gh.clone("https://example.com/big/repo.git")
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "timed out" in str(e)
+
 
 
 def test_llama_scan_survives_deep_clone_failure(monkeypatch):

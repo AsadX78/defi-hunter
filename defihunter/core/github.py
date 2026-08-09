@@ -294,27 +294,99 @@ def detect_ca_repos(repos: List[Dict[str, object]], workers: int = 8) -> Dict[st
     return scores
 
 
-def clone(repo_url: str, attempts: int = 2) -> Path:
-    """Shallow-clone a git repo into the temp dir. Returns the repo root.
+def _try_tarball(repo_url: str, dest: Path) -> bool:
+    """Download a GitHub repo as a codeload tarball and unpack it to dest.
 
-    Retries once on failure: flaky DNS resolvers produce transient
-    'Could not resolve host' errors that vanish on retry. Only the final
-    failure raises, so a hiccup can't kill a hunt that's already partway.
+    A single HTTP stream beats `git clone` by a wide margin on large repos
+    (no ref negotiation, no object graph) — eigenlayer-contracts clones in
+    seconds this way. Only works for github.com URLs; local paths and other
+    hosts fall back to git clone. Returns True iff dest got a full tree.
+    """
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", repo_url)
+    if not m:
+        return False
+    org, repo = m.group(1), m.group(2)
+    url = f"https://codeload.github.com/{org}/{repo}/tar.gz/HEAD"
+    tmp = TMP_ROOT / (dest.name + ".tar.gz")
+    staging = TMP_ROOT / (dest.name + "_x")
+    try:
+        dl = subprocess.run(
+            ["curl", "-sSL", "--connect-timeout", "15", "--max-time", "300",
+             "-o", str(tmp), url],
+            capture_output=True, text=True, timeout=320,
+        )
+        if dl.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            return False
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+        tx = subprocess.run(
+            ["tar", "-xzf", str(tmp), "-C", str(staging)],
+            capture_output=True, text=True, timeout=300,
+        )
+        if tx.returncode != 0:
+            return False
+        entries = list(staging.iterdir())
+        if len(entries) == 1 and entries[0].is_dir():
+            shutil.move(str(entries[0]), str(dest))
+        else:
+            shutil.move(str(staging), str(dest))
+        return dest.exists() and any(dest.iterdir())
+    except Exception:
+        return False
+    finally:
+        if staging.exists() and not dest.exists():
+            try:
+                shutil.rmtree(staging)
+            except OSError:
+                pass
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def clone(repo_url: str, attempts: int = 2) -> Path:
+    """Fetch a repo's HEAD tree into the temp dir. Returns the repo root.
+
+    Tries `git clone --depth 1` first — on most networks (including this
+    one) it beats a tarball by 10x+. Retries once on transient DNS/network
+    failures. If git fails AND the repo is a github.com URL, falls back to
+    a codeload tarball before giving up — useful when the network is
+    git-hostile but plain HTTPS works. All failures surface as
+    RuntimeError so the wizard can degrade gracefully instead of crashing
+    mid-hunt.
     """
     TMP_ROOT.mkdir(parents=True, exist_ok=True)
     name = re.sub(r"[^A-Za-z0-9_.-]", "_", repo_url.rstrip("/").split("/")[-1]) or "repo"
     dest = TMP_ROOT / name
     last_err = ""
+    tried_tarball = False
     for i in range(attempts):
         if dest.exists():
             shutil.rmtree(dest)
-        proc = subprocess.run(
-            ["git", "clone", "--depth", "1", "--quiet", repo_url, str(dest)],
-            capture_output=True, text=True, timeout=180,
-        )
+        try:
+            proc = subprocess.run(
+                ["git", "clone", "--depth", "1", "--quiet", repo_url, str(dest)],
+                capture_output=True, text=True, timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            last_err = "git clone timed out after 180s — network is slow or git-hostile"
+            if not tried_tarball:
+                tried_tarball = True
+                if _try_tarball(repo_url, dest):
+                    return dest
+            if i < attempts - 1:
+                time.sleep(1.5 * (i + 1))  # 1.5s before the retry
+            continue
         if proc.returncode == 0:
             return dest
         last_err = (proc.stderr or proc.stdout).strip()
+        if not tried_tarball:
+            tried_tarball = True
+            if _try_tarball(repo_url, dest):
+                return dest
         if i < attempts - 1:
             time.sleep(1.5 * (i + 1))  # 1.5s before the retry
     raise RuntimeError(
