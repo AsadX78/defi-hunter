@@ -318,14 +318,15 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
         return []
 
     results: List[Dict] = []
-    with ForkSimulator(rpc_url=rpc) as fork:
-        if not fork.available:
-            ui.warn(fork.why_not)
-            return results
-        ui.info(f"Anvil fork live on {fork.rpc_url} — verifying {len(resolved)} file→address hit(s)")
-        for f, addr in resolved:
-            res = fork.run(f["attack"], addr, source_finding=f)
-            results.append(res)
+    with ui.spinner("Booting anvil mainnet fork — first state fetch can take ~20s"):
+        with ForkSimulator(rpc_url=rpc) as fork:
+            if not fork.available:
+                ui.warn(fork.why_not)
+                return results
+            ui.info(f"Anvil fork live on {fork.rpc_url} — verifying {len(resolved)} file→address hit(s)")
+            for f, addr in resolved:
+                res = fork.run(f["attack"], addr, source_finding=f)
+                results.append(res)
     ui.console.print(ui.attack_flow(findings, results))
     ok = sum(1 for r in results if r.get("success"))
     if ok:
@@ -344,6 +345,7 @@ def _run_simulate(contracts: Dict[str, Dict], attacks: List[str], rpc: Optional[
     with progress:
         for addr in contracts:
             for attack in attacks:
+                progress.update(task, description=f"Running {attack} on {addr[:10]}…")
                 res = simulator.run(attack, addr)
                 res.update({"address": addr, "attack": attack})
                 results.append(res)

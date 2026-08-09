@@ -116,9 +116,19 @@ def rule(title: str = "") -> None:
 
 @contextmanager
 def spinner(label: str):
-    """Run a block with an animated spinner in the terminal."""
-    spinner_console = Console(theme=THEME, highlight=False)
-    with spinner_console.status(Text(f"{label}…", style="step")):
+    """Run a block with an animated spinner + live elapsed timer.
+
+    Indeterminate progress row: spinner, label, ticking clock — so a slow
+    stage (RPC resolve, repo scan, anvil fork boot) never looks frozen.
+    """
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    )
+    progress.add_task(f"{label}…", total=None)
+    with progress:
         yield
 
 
@@ -138,7 +148,14 @@ def progress_bar(total: int, description: str = "Working"):
 
 def spinner_for(label: str, seconds: float = 1.2):
     """Minimal blocking spinner — handy for demos & tests."""
-    with console.status(Text(f"{label}…", style="step")):
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    )
+    progress.add_task(f"{label}…", total=None)
+    with progress:
         time.sleep(seconds)
 
 
