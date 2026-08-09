@@ -4,14 +4,17 @@ These never touch a mainnet RPC — they boot a blank anvil, deploy the
 vulnerable SimpleVault demo and the ReentrancyAttacker, and prove the drain
 with a real mined transaction.
 """
+import shutil
+
 import pytest
 
 from defihunter.core import attacker
 from defihunter.core.simulator import ForkSimulator
 
 pytestmark = pytest.mark.skipif(
-    not attacker.available(),
-    reason="solc/forge not available — drain replay needs a compiler")
+    not (attacker.available()
+         and shutil.which("anvil") and shutil.which("cast")),
+    reason="solc + anvil/cast needed for the drain replay demo")
 
 
 def _demo():

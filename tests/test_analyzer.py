@@ -215,6 +215,9 @@ class TestForkSimulator:
     def test_blank_anvil_offline_chain(self, monkeypatch):
         """rpc_url=None now boots a BLANK anvil chain (offline self-test /
         drain demo). It must come up available without any mainnet RPC."""
+        import shutil
+        if not shutil.which("anvil") or not shutil.which("cast"):
+            pytest.skip("anvil/cast not installed on this runner")
         monkeypatch.setattr(ForkSimulator, "_has_tool", lambda self, name: True)
         with ForkSimulator(rpc_url=None) as fork:
             assert fork.available
