@@ -27,6 +27,35 @@ The CLI now renders through a centralized `rich` UI layer (`defihunter/ui.py`):
 
 All command names and options are unchanged from v1.0.
 
+## 🪄 Interactive Wizard (v1.2)
+
+Just run `defihunter` with no arguments (or `defihunter wizard`) and it walks
+you through the whole hunt with prompts:
+
+```
+$ defihunter
+
+  1. GitHub repo URL of the protocol
+     → e.g. https://github.com/Layr-Labs/eigenlayer-contracts
+  2. RPC URL (Enter = eth.drpc.org, or type 'skip')
+     → clones the repo, extracts every 0x…40 address, verifies which
+       ones actually have deployed code on-chain
+  3. Vulnerability check type
+     → 1 = static analysis, 2 = attack simulation, 3 = both (recommended)
+  4. Attack selection (for simulation) — pick from the 18 built-in attacks
+  5. Runs the checks with progress bars, then offers an HTML report
+```
+
+You can skip prompts with flags for scripting:
+
+```bash
+defihunter wizard --repo https://github.com/Layr-Labs/eigenlayer-contracts \
+                  --check both \
+                  --attacks initialize,admin,mint,withdraw
+```
+
+A local folder also works as the "repo" for testing repos that aren't public.
+
 ## ⚠️ Legal Disclaimer
 
 **FOR AUTHORIZED SECURITY RESEARCH ONLY.**
@@ -116,9 +145,11 @@ export ALCHEMY_KEY="your_key"
 
 ```
 defihunter/
-├── cli.py              # Click-based CLI (renders via ui.py)
+├── cli.py              # Click-based CLI (renders via ui.py; bare run = wizard)
 ├── ui.py               # Rich UI layer — banner, tables, panels, spinners, theme
+├── wizard.py           # Interactive guided hunt (repo URL → contracts → checks)
 ├── core/
+│   ├── github.py       # Clone protocol repo + extract/verify contract addresses
 │   ├── recon.py        # Contract discovery
 │   ├── analyzer.py     # Vulnerability detection
 │   ├── simulator.py    # Fork simulation

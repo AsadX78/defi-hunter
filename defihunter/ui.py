@@ -165,8 +165,14 @@ def contracts_table(contracts: Dict[str, Dict[str, Any]], title: str = "Contract
         name = info.get("name", "Unknown")
         code = info.get("code_size", 0)
         has_code = info.get("has_code", bool(code))
-        code_str = f"{code:,} bytes" if code else ("deployed" if has_code else "no code")
-        code_style = "ok" if has_code else "warn"
+        status = info.get("status")
+        if status is not None:
+            # github scanner supplies an explicit status string
+            code_str = str(status)
+            code_style = "ok" if ("bytes" in status or "deployed" in status.lower()) else "warn"
+        else:
+            code_str = f"{code:,} bytes" if code else ("deployed" if has_code else "no code")
+            code_style = "ok" if has_code else "warn"
         table.add_row(
             str(i),
             addr,

@@ -15,7 +15,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 def _banner():
@@ -24,7 +24,7 @@ def _banner():
         ui.banner(__version__)
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(__version__)
 @click.option('--config', '-c', type=click.Path(), help='Config file')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
@@ -34,7 +34,23 @@ def cli(ctx, config, verbose):
     ctx.ensure_object(dict)
     ctx.obj['config'] = load_config(config)
     ctx.obj['verbose'] = verbose
+    # Bare `defihunter` (no subcommand) boots the interactive wizard.
+    if ctx.invoked_subcommand is None:
+        from defihunter.wizard import run_wizard
+        run_wizard(verbose=verbose)
+        ctx.exit(0)
     _banner()
+
+
+@cli.command()
+@click.option('--repo', '-r', default=None, help='GitHub repo URL (skips the repo prompt)')
+@click.option('--check', '-c', type=click.Choice(['static', 'simulate', 'both']), default=None, help='Vulnerability check type (skips the prompt)')
+@click.option('--attacks', '-a', default=None, help='Comma-separated attack names for simulation (e.g. initialize,admin)')
+def wizard(repo, check, attacks):
+    """Interactive guided hunt: GitHub repo → contracts → vulnerability checks"""
+    from defihunter.wizard import run_wizard
+    attack_list = [a.strip() for a in attacks.split(',') if a.strip()] if attacks else None
+    run_wizard(verbose=False, repo_url=repo, check=check, attacks=attack_list)
 
 
 @cli.group()
