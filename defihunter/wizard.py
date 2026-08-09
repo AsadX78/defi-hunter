@@ -304,10 +304,22 @@ def resolve_wallets(attacker: Optional[str] = None,
     """Fill missing attacker / profit-wallet config interactively.
 
     Prompts at the START of a session for anything not passed as a flag.
-    Silently returns the current values when stdin isn't a TTY (CI / pipes)
-    or when fork verification is disabled — no hang, no pointless questions.
+    On a real terminal the user is asked; in non-interactive sessions (CI,
+    pipes, script runners) the defaults are applied but NEVER silently — a
+    notice always shows which wallets the fork proof will use. With
+    --no-fork nothing is asked or printed (no proof will run).
     """
-    if no_fork or not sys.stdin.isatty():
+    if no_fork:
+        return attacker, profit_wallet
+
+    if not sys.stdin.isatty():
+        if attacker or profit_wallet:
+            ui.info(f"Fork wallets — attacker: {attacker or '(default)'}, "
+                    f"profit: {profit_wallet or '= attacker'}")
+        else:
+            ui.info("Non-interactive session — fork proof will use default "
+                    f"wallets (attacker {DEFAULT_ATTACKER}, profit = attacker). "
+                    "Pass --attacker / --profit-wallet to override.")
         return attacker, profit_wallet
 
     def _ask(prompt_text: str, default: str) -> str:

@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.28"
+__version__ = "1.3.29"
 
 
 def _banner():
@@ -336,9 +336,6 @@ def scan(target, rpc, output, no_fork, fail_on, attacker, profit_wallet):
                 f"(0x + 40 hex chars)")
     attacker, profit_wallet = resolve_wallets(attacker, profit_wallet,
                                               no_fork=no_fork)
-    if attacker or profit_wallet:
-        ui.info(f"Fork wallets — attacker: {attacker or '(default)'}, "
-                f"profit: {profit_wallet or '(= attacker)'}")
 
     # 1) static analysis: address scan or repo scan
     is_addr = target.lower().startswith("0x")

@@ -861,6 +861,16 @@ class TestWalletResolution:
                                       None, no_fork=False) == \
             ("0x1111111111111111111111111111111111111111", None)
 
+    def test_non_tty_is_never_silent(self, monkeypatch, capsys):
+        """Non-interactive runs must SAY which wallets are used — no silent
+        defaults that leave the user wondering 'why didn't it ask?'."""
+        from defihunter import wizard
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        wizard.resolve_wallets(None, None, no_fork=False)
+        out = capsys.readouterr().out + capsys.readouterr().err
+        assert "Non-interactive session" in out
+        assert "0x3C44" in out  # names the default attacker
+
     def test_no_fork_skips_prompt_even_on_tty(self, monkeypatch):
         from defihunter import wizard
         monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
