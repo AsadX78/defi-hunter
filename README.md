@@ -68,20 +68,32 @@ Only use DeFi Hunter on protocols you own or have explicit written authorization
 
 ```bash
 # Clone
-git clone https://github.com/defi-hunter/defi-hunter.git
+git clone git@github.com:AsadX78/defi-hunter.git
 cd defi-hunter
 
-# Install (auto-creates .venv on PEP-668 systems like Kali)
+# One command — creates a venv, installs, and links `defihunter`
+# into ~/.local/bin so it's on your PATH (no activation needed):
 make install
 
-# Or manually with a virtual environment:
+# Then just run it — it boots the interactive wizard:
+defihunter
+```
+
+> **Why no `source .venv/bin/activate`?** `make install` writes a tiny wrapper
+> (`~/.local/bin/defihunter`) that execs the venv CLI. If your shell doesn't
+> already include `~/.local/bin`, add `export PATH="$HOME/.local/bin:$PATH"`
+> to your `~/.zshrc` / `~/.bashrc`.
+
+If you prefer to manage the environment yourself:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-
-# Or, if you prefer system-wide (not on PEP-668 systems):
-pip install -e ".[dev]"
 ```
+
+> **Note:** if you already have the repo cloned, just run `make install` inside
+> it — no need to clone again.
 
 ### Dependencies
 
