@@ -15,13 +15,13 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.13"
+__version__ = "1.3.14"
 
 
 def _banner():
     """Show the banner only on real terminals (keeps pipes/tests clean)."""
     if ui.console.is_terminal:
-        ui.banner(__version__)
+        ui.mega_banner(__version__)
 
 
 @click.group(invoke_without_command=True)
@@ -260,12 +260,20 @@ def repo(ctx, target, rpc, as_json, no_fork):
         ui.ok(f"Findings saved: {path}")
 
     fork_ok = sum(1 for r in fork_results if r.get("success"))
-    ui.console.print(ui.summary_panel([
+    all_findings = list(findings) + [{
+        "severity": "CRITICAL" if r.get("success") else "MEDIUM",
+        "title": f"fork-confirmed {r.get('attack', '')} on {r.get('target', '')[:12]}…",
+        "endpoint": r.get("target", ""),
+    } for r in fork_results if r.get("success")]
+    ui.console.print()
+    ui.console.print(ui.attack_surface_gauge(all_findings))
+    ui.console.print(ui.severity_chart(all_findings))
+    ui.hunt_complete([
         ("repo", target),
         ("files analyzed", str(len({f['file'] for f in findings}))),
         ("findings", str(len(findings))),
         ("fork-verified", f"{len(fork_results)} run, {fork_ok} exploitable"),
-    ], title="Analyze Complete"))
+    ], level=ui.threat_level(all_findings))
 
 
 @cli.group()

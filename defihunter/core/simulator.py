@@ -393,7 +393,9 @@ class ForkSimulator:
         self.proc = None
         self.available = False
         self.why_not = ""
-        self.attacker = "0x1111111111111111111111111111111111111111"
+        # anvil dev account #2: always unlocked + funded on any anvil fork, and
+        # from the protocol's perspective it is just an arbitrary EOA.
+        self.attacker = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 
     @staticmethod
     def _free_port() -> int:
@@ -461,11 +463,41 @@ class ForkSimulator:
         return {"ok": proc.returncode == 0, "stdout": proc.stdout.strip(),
                 "stderr": proc.stderr.strip()}
 
-    def run(self, attack: str, target: str, source_finding: Optional[Dict] = None) -> Dict:
-        """eth_call the finding's attack path from an arbitrary account.
+    def _read(self, selector: str) -> str:
+        """Read a state variable (no from-address needed for view reads)."""
+        proc = subprocess.run(
+            ["cast", "call", self._target, selector, "--rpc-url", self.rpc_url_local],
+            capture_output=True, text=True, timeout=30)
+        return proc.stdout.strip() or proc.stderr.strip()
 
-        A call that does NOT revert proves the function is callable by anyone
-        — i.e. the static finding is a live, exploitable surface.
+    def _fund_attacker(self) -> bool:
+        """Give the attacker 1 ETH on the fork so real sends can pay gas."""
+        proc = subprocess.run(
+            ["cast", "rpc", "anvil_setBalance", self.attacker,
+             "0xDE0B6B3A7640000", "--rpc-url", self.rpc_url_local],
+            capture_output=True, text=True, timeout=30)
+        # anvil_setBalance returns JSON 'null' on success — exit code is the truth.
+        return proc.returncode == 0
+
+    def _send(self, selector: str, args: List[str]) -> Dict:
+        """A REAL state-changing tx from the attacker account (fork-local)."""
+        if not self._fund_attacker():
+            return {"ok": False, "stdout": "", "stderr": "could not fund attacker"}
+        cmd = ["cast", "send", "--unlocked", self._target, selector, *args,
+               "--from", self.attacker, "--rpc-url", self.rpc_url_local]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        return {"ok": proc.returncode == 0, "stdout": proc.stdout.strip(),
+                "stderr": proc.stderr.strip()}
+
+    def run(self, attack: str, target: str, source_finding: Optional[Dict] = None) -> Dict:
+        """Prove the finding on a real anvil fork.
+
+        mint / initialize get the full state-changing proof: the attacker is
+        funded on the fork, the tx actually executes, and the resulting state
+        (balanceOf / owner) is read back as evidence. delegatecall is proven
+        via eth_call (an actual upgrade would clobber fork state for later
+        checks). A non-reverting call/tx = the function is callable by anyone
+        = the static finding is a live surface.
         """
         if not self.available:
             return {"success": False, "error": self.why_not, "attack": attack,
@@ -474,30 +506,42 @@ class ForkSimulator:
         steps: List[Dict] = []
 
         if attack == "mint":
-            r = self._call("mint(address,uint256)", [self.attacker, "1000000"])
-            steps.append({"step": "mint(address,uint256) from arbitrary account",
-                          "value": "returned" if r["ok"] else "reverted"})
+            r = self._send("mint(address,uint256)", [self.attacker, "1000000"])
             if r["ok"]:
+                # read the attacker's resulting balance as proof
+                br = self._call("balanceOf(address)", [self.attacker], extra_from=False)
+                bal = br["stdout"]
+                steps.append({"step": "mint(address,uint256) sent from arbitrary account",
+                              "value": "tx mined ✅"})
+                steps.append({"step": f"balanceOf({self.attacker[:10]}…) after mint",
+                              "value": bal or "read failed"})
                 return {"success": True, "attack": attack, "target": target,
                         "profit": "Unlimited token supply minted for free",
                         "steps": steps,
-                        "evidence": r["stdout"][:120] or "0x",
+                        "evidence": f"balanceOf(attacker) = {bal or 'n/a'} (previously 0)",
                         "source_finding": source_finding}
             return {"success": False, "attack": attack, "target": target,
-                    "steps": steps, "evidence": r["stderr"][:160],
+                    "steps": steps, "evidence": r["stderr"][:200],
                     "source_finding": source_finding}
 
         if attack == "initialize":
             tried = []
-            for sel, args in [("initialize()", []), ("initialize(address)", [self.attacker])]:
-                r = self._call(sel, args)
-                tried.append(f"{sel}: {'returned' if r['ok'] else 'reverted'}")
+            for sel, args in [("initialize(address)", [self.attacker]),
+                              ("initialize()", [])]:
+                r = self._send(sel, args)
+                tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
                 if r["ok"]:
-                    steps.append({"step": sel + " from arbitrary account",
-                                  "value": "returned — not yet initialized!"})
+                    steps.append({"step": sel + " sent from arbitrary account",
+                                  "value": "tx mined — not yet initialized!"})
+                    owner = self._read("owner()")
+                    steps.append({"step": "owner() after initialize", "value": owner})
+                    norm = lambda h: h.lower().replace("0x", "").lstrip("0")
+                    owned = norm(owner) == norm(self.attacker)
                     return {"success": True, "attack": attack, "target": target,
                             "profit": "Full contract takeover (first-caller becomes owner)",
-                            "steps": steps, "evidence": sel,
+                            "steps": steps,
+                            "evidence": (f"owner() = {owner} "
+                                         f"(attacker {'IS' if owned else 'NOT'} owner)"),
                             "source_finding": source_finding}
             steps.append({"step": "initialize() attempts", "value": "; ".join(tried)})
             return {"success": False, "attack": attack, "target": target,
@@ -507,6 +551,8 @@ class ForkSimulator:
 
         if attack == "delegatecall":
             # Permissionless proxy upgrade = arbitrary delegatecall.
+            # eth_call only: an actual upgradeTo would replace the fork's
+            # implementation and invalidate every subsequent check.
             dummy = "0x2222222222222222222222222222222222222222"
             tried = []
             for sel, args in [("upgradeTo(address)", [dummy]),

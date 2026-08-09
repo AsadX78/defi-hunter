@@ -310,6 +310,7 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
         for f, addr in resolved:
             res = fork.run(f["attack"], addr, source_finding=f)
             results.append(res)
+    ui.console.print(ui.attack_flow(findings, results))
     ok = sum(1 for r in results if r.get("success"))
     if ok:
         ui.warn(f"{ok} finding(s) CONFIRMED callable by an arbitrary account — "
@@ -526,9 +527,13 @@ def run_wizard(
     repo_url: Optional[str] = None,
     check: Optional[str] = None,
     attacks: Optional[List[str]] = None,
+    version: str = "",
 ) -> None:
     """Boot the guided hunt. Pass repo_url/check/attacks to skip those prompts."""
-    ui.banner()
+    if ui.console.is_terminal:
+        ui.mega_banner(version)
+    else:
+        ui.banner()
 
     # --- 1. Repo -----------------------------------------------------------
     if repo_url:
@@ -633,15 +638,24 @@ def run_wizard(
 
     sim_successes = sum(1 for r in sim_results if r.get("success"))
     fork_successes = sum(1 for r in fork_results if r.get("success"))
-    ui.console.print(ui.summary_panel([
+    all_findings = list(findings) + [{
+        "severity": "CRITICAL" if r.get("success") else "MEDIUM",
+        "title": f"fork-confirmed {r.get('attack', '')} on {r.get('target', '')[:12]}…",
+        "endpoint": r.get("target", ""),
+    } for r in fork_results if r.get("success")]
+    level = ui.threat_level(all_findings)
+    ui.console.print()
+    ui.console.print(ui.attack_surface_gauge(all_findings))
+    ui.console.print(ui.severity_chart(all_findings))
+    ui.hunt_complete([
         ("repo", scan.get("repo_url", repo_url)),
         ("addresses", str(scan["total_addresses"])),
         ("contracts checked", str(len(contracts))),
         ("static findings", str(len(findings))),
         ("fork-verified", f"{len(fork_results)} run, {fork_successes} exploitable"),
         ("simulations", f"{len(sim_results)} run, {sim_successes} succeeded"),
-    ], title="Hunt Complete"))
-    ui.ok("Done. Happy hunting!")
+    ], level=level)
+    ui.ok("Done. Happy hunting! 🏆")
 
 
 def _write_report(scan: Dict, findings: List[Dict], sim_results: List[Dict],

@@ -275,3 +275,186 @@ def summary_panel(rows: Iterable[tuple[str, str]], title: str = "Summary") -> Pa
     """Key/value summary panel (used for verdicts, scan stats)."""
     lines = [Text(f"{k}: ", style="bold white") + Text(v) for k, v in rows]
     return Panel(Group(*lines), title=title, border_style="cyan", box=box.ROUNDED)
+
+
+# ---------------------------------------------------------------------------
+# The world-record visual toolkit 🤘
+# Gradient banners, threat-level kill screens, attack-surface gauges,
+# severity charts and fork-proof flow diagrams.
+# ---------------------------------------------------------------------------
+
+GRADIENT = ("bright_red", "bright_magenta", "bright_cyan", "bright_green",
+            "bright_yellow", "bright_cyan", "bright_magenta", "bright_red")
+
+MEGA_BANNER = r"""
+ ██████╗ ███████╗███████╗██╗      ██╗  ██╗██╗   ██╗███╗   ██╗████████╗███████╗██████╗
+ ██╔══██╗██╔════╝██╔════╝██║      ██║  ██║██║   ██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗
+ ██████╔╝█████╗  █████╗  ██║      ███████║██║   ██║██╔██╗ ██║   ██║   █████╗  ██████╔╝
+ ██╔══██╗██╔══╝  ██╔══╝  ██║      ██╔══██║██║   ██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗
+ ██║  ██║███████╗██║     ███████╗██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║
+ ╚═╝  ╚═╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
+"""
+
+
+def mega_banner(version: str = "") -> None:
+    """Print the DEFI HUNTER mega-banner with a per-line color gradient."""
+    lines = MEGA_BANNER.strip("\n").splitlines()
+    n = len(lines)
+    body = Text(no_wrap=True, overflow="ignore")
+    for i, line in enumerate(lines):
+        color = GRADIENT[int(i * len(GRADIENT) / max(n, 1))]
+        body.append_text(Text(line, style=f"bold {color}", no_wrap=True,
+                              overflow="ignore"))
+        body.append_text(Text("\n"))
+    tag = Text("⚡ WORLD-CLASS DeFi ATTACK TOOLKIT", style="bold yellow",
+               justify="center")
+    if version:
+        tag.append_text(Text(f"  ·  v{version}", style="muted"))
+    console.print(Panel(body, border_style="bright_red", box=box.DOUBLE,
+                        padding=(0, 1)))
+    console.print(tag)
+    console.print()
+
+
+def threat_level(findings: Sequence[Dict[str, Any]]) -> str:
+    """Map findings to a threat level (CRITICAL/HIGH/MODERATE/LOW/CLEAN)."""
+    if not findings:
+        return "CLEAN"
+    weight = 0
+    for f in findings:
+        sev = str(f.get("severity", "INFO")).upper()
+        weight += {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}.get(sev, 0)
+    score = weight / max(1, len(findings))
+    if score >= 3.2:
+        return "CRITICAL"
+    if score >= 2.2:
+        return "HIGH"
+    if score >= 1.2:
+        return "MODERATE"
+    return "LOW"
+
+
+def threat_banner(level: str, extra: str = "") -> Panel:
+    """Big kill-screen style threat-level banner."""
+    glyph = {"CRITICAL": "☠️  ", "HIGH": "🔥 ", "MODERATE": "⚠️ ", "LOW": "🟡",
+             "CLEAN": "🛡️  "}.get(level, "❓")
+    colors = {"CRITICAL": "red", "HIGH": "bright_red", "MODERATE": "yellow",
+              "LOW": "bright_yellow", "CLEAN": "green"}
+    style = colors.get(level, "white")
+    header = Text(f"{glyph} THREAT LEVEL: {level}", style=f"bold white on {style}",
+                  justify="center")
+    lines = [header]
+    if extra:
+        lines.append(Text(extra, style="bold white", justify="center"))
+    return Panel(Group(*lines), border_style=style, box=box.DOUBLE)
+
+
+def attack_surface_gauge(findings: Sequence[Dict[str, Any]]) -> Panel:
+    """0–10 attack-surface meter, drawn with unicode blocks."""
+    if not findings:
+        score, label = 0.0, "CLEAN"
+    else:
+        weight = sum({"CRITICAL": 10, "HIGH": 7, "MEDIUM": 4, "LOW": 2,
+                      "INFO": 1}.get(str(f.get("severity", "INFO")).upper(), 0)
+                     for f in findings)
+        score = min(10.0, round(weight / 2.5, 1))
+        label = threat_level(findings)
+    color = {"CRITICAL": "red", "HIGH": "bright_red", "MODERATE": "yellow",
+             "LOW": "bright_yellow", "CLEAN": "green"}.get(label, "white")
+    filled = int(score)
+    bar = "█" * filled + "░" * (10 - filled)
+    body = Text(f"ATTACK SURFACE  {bar}  {score:.1f}/10", style=f"bold {color}")
+    sub = Text(f"threat: {label}", style=f"{color}", justify="center")
+    return Panel(Group(body, sub), title="EXPOSURE METER", border_style=color,
+                 box=box.ROUNDED)
+
+
+def severity_chart(findings: Sequence[Dict[str, Any]]) -> Panel:
+    """Horizontal bar chart of findings by severity."""
+    counts = {s: 0 for s in SEVERITY_ORDER}
+    for f in findings:
+        sev = str(f.get("severity", "INFO")).upper()
+        counts[sev] = counts.get(sev, 0) + 1
+    total = max(1, len(findings))
+    max_c = max(1, max(counts.values()))
+    width = 20
+    lines = []
+    for sev in SEVERITY_ORDER:
+        c = counts.get(sev, 0)
+        if c == 0:
+            continue
+        bar_len = max(1, int(c * width / max_c))
+        color = {"CRITICAL": "red", "HIGH": "bright_red", "MEDIUM": "yellow",
+                 "LOW": "cyan", "INFO": "dim"}.get(sev, "white")
+        lines.append(Text(f"{sev:<9} ", style="bold white") +
+                     Text("█" * bar_len, style=color) +
+                     Text(f" {c} ({c*100//total}%)", style="muted"))
+    if not lines:
+        lines.append(Text("no findings — clean repo", style="green"))
+    return Panel(Group(*lines), title="FINDINGS BY SEVERITY", border_style="cyan",
+                 box=box.ROUNDED)
+
+
+def attack_flow(findings: Sequence[Dict[str, Any]],
+                fork_results: Sequence[Dict[str, Any]] = ()) -> Panel:
+    """Visual chain: FINDING → ROUTE → FORK STATUS.
+
+    ✅ EXPLOITABLE   — fork-proven callable by an arbitrary account
+    ⚠️ POSSIBLE      — static hit, not (or not yet) fork-proven
+    ⚪ NOT VERIFIED  — source hint with no direct exploit route
+    """
+    status_by_fileline: Dict[tuple, str] = {}
+    for r in fork_results:
+        sf = r.get("source_finding") or {}
+        key = (sf.get("file"), sf.get("line"))
+        if r.get("success"):
+            status_by_fileline[key] = "✅ EXPLOITABLE"
+        else:
+            status_by_fileline.setdefault(key, "⚠️ POSSIBLE")
+    for f in findings:
+        key = (f.get("file"), f.get("line"))
+        if key not in status_by_fileline:
+            status_by_fileline[key] = "⚠️ POSSIBLE" if f.get("attack") else "⚪ NOT VERIFIED"
+
+    table = Table(box=box.ROUNDED, border_style="magenta", header_style="bold magenta",
+                  expand=True, show_edge=True)
+    table.add_column("FINDING", style="bold white", max_width=46, overflow="fold")
+    table.add_column("ROUTE", style="accent", justify="center")
+    table.add_column("FORK STATUS", justify="center")
+    for f in findings:
+        sev = str(f.get("severity", "INFO")).upper()
+        title = str(f.get("title", "Unknown"))
+        loc = f"{f.get('file')}:{f.get('line')}" if f.get("file") else "-"
+        route = str(f.get("attack") or "-")
+        status = status_by_fileline.get((f.get("file"), f.get("line")),
+                                        "⚪ NOT VERIFIED")
+        status_style = ("success" if "EXPLOITABLE" in status else
+                        "warn" if "POSSIBLE" in status else "muted")
+        cell = Text()
+        cell.append(Text(f"[{sev}] {title}", style=f"sev.{sev}"))
+        cell.append(Text("\n"))
+        cell.append(Text(loc, style="dim"))
+        table.add_row(
+            cell,
+            Text(route, style="accent"),
+            Text(status, style=status_style),
+        )
+    return Panel(table, title="ATTACK FLOW", border_style="magenta", box=box.DOUBLE)
+
+
+def hunt_complete(rows: Iterable[tuple[str, str]], level: str = "LOW") -> None:
+    """Final kill-screen: verdict header + key/value stats."""
+    console.print()
+    console.print(threat_banner(level, extra="TARGET ASSESSED · REPORT READY"))
+    console.print(ui_summary_table(rows, title="HUNT COMPLETE 🏆"))
+
+
+def ui_summary_table(rows: Iterable[tuple[str, str]], title: str = "Summary") -> Table:
+    """Key/value summary as a table (denser than the panel)."""
+    table = Table(box=box.ROUNDED, border_style="cyan", header_style="bold cyan",
+                  show_header=False, title=title, title_style="bold white")
+    table.add_column("key", style="bold white", justify="right", no_wrap=True)
+    table.add_column("value", style="white")
+    for k, v in rows:
+        table.add_row(k, v)
+    return table

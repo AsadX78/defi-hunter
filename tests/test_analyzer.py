@@ -169,3 +169,109 @@ class TestForkSimulator:
     def test_free_port(self):
         port = ForkSimulator._free_port()
         assert 0 < port < 65536
+
+
+def _render(renderable) -> str:
+    """Render any rich renderable to plain text for assertions."""
+    from rich.console import Console
+    from defihunter import ui
+    console = Console(width=120, force_terminal=False, color_system=None,
+                      theme=ui.THEME)
+    with console.capture() as cap:
+        console.print(renderable)
+    return cap.get()
+
+
+class TestVisualToolkit:
+    """The world-record visual toolkit — pure rendering, no console needed."""
+
+    def test_threat_level_mapping(self):
+        from defihunter.ui import threat_level
+        assert threat_level([]) == "CLEAN"
+        assert threat_level([{"severity": "CRITICAL"}]) == "CRITICAL"
+        assert threat_level([{"severity": "HIGH"}]) == "HIGH"
+        assert threat_level([{"severity": "LOW"}]) == "LOW"
+        assert threat_level([{"severity": "MEDIUM"}]) == "MODERATE"
+
+    def test_threat_banner_renders(self):
+        from defihunter.ui import threat_banner
+        text = _render(threat_banner("CRITICAL", extra="boom"))
+        assert "CRITICAL" in text
+        assert "boom" in text
+
+    def test_attack_surface_gauge_scores(self):
+        from defihunter.ui import attack_surface_gauge
+        p = attack_surface_gauge([{"severity": "CRITICAL"},
+                                  {"severity": "HIGH"}, {"severity": "HIGH"}])
+        text = _render(p)
+        import re as _re
+        assert _re.search(r"\d\.\d/10", text)  # a numeric score is rendered
+
+    def test_severity_chart_counts(self):
+        from defihunter.ui import severity_chart
+        p = severity_chart([{"severity": "CRITICAL"}, {"severity": "HIGH"},
+                            {"severity": "HIGH"}, {"severity": "LOW"}])
+        text = _render(p)
+        assert "CRITICAL" in text
+        assert "2" in text
+
+    def test_attack_flow_statuses(self):
+        from defihunter.ui import attack_flow
+        findings = [{"severity": "HIGH", "title": "mint() no guard",
+                     "file": "src/A.sol", "line": 5, "attack": "mint"},
+                    {"severity": "HIGH", "title": "tx.origin",
+                     "file": "src/B.sol", "line": 3, "attack": "admin"}]
+        forks = [{"success": True, "attack": "mint", "target": "0xabc",
+                  "source_finding": {"file": "src/A.sol", "line": 5}}]
+        panel = attack_flow(findings, forks)
+        text = _render(panel)
+        assert "EXPLOITABLE" in text   # mint fork-proven
+        assert "POSSIBLE" in text      # admin static-only
+
+    def test_hunt_complete_smoke(self, capsys):
+        from defihunter.ui import hunt_complete
+        hunt_complete([("repo", "x"), ("findings", "2")], level="HIGH")
+        out = capsys.readouterr().out
+        assert "HUNT COMPLETE" in out
+        assert "THREAT LEVEL: HIGH" in out
+
+    def test_mega_banner_smoke(self, capsys):
+        from defihunter.ui import mega_banner
+        mega_banner("9.9.9")
+        out = capsys.readouterr().out
+        assert "WORLD-CLASS" in out
+        assert "9.9.9" in out
+
+
+class TestForkProofHelpers:
+    """State-changing proof helpers — mocked cast, no real fork needed."""
+
+    def test_fund_attacker_success(self, monkeypatch):
+        import subprocess
+        from defihunter.core.simulator import ForkSimulator
+
+        def fake_run(cmd, capture_output, text, timeout):
+            class R:
+                returncode = 0
+                stdout = "null\n"
+                stderr = ""
+            return R()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        fork = ForkSimulator(rpc_url="http://127.0.0.1:8545")
+        assert fork._fund_attacker()
+
+    def test_fund_attacker_failure(self, monkeypatch):
+        import subprocess
+        from defihunter.core.simulator import ForkSimulator
+
+        def fake_run(cmd, capture_output, text, timeout):
+            class R:
+                returncode = 1
+                stdout = ""
+                stderr = "boom"
+            return R()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        fork = ForkSimulator(rpc_url="http://127.0.0.1:8545")
+        assert not fork._fund_attacker()

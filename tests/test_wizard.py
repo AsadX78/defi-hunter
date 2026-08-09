@@ -122,7 +122,7 @@ def test_wizard_boots_with_preset_repo(fake_repo: Path):
     assert result.exit_code == 0, result.output
     assert "Found 3 candidate address" in result.output
     assert "STATIC ANALYSIS" in result.output
-    assert "Hunt Complete" in result.output
+    assert "HUNT COMPLETE" in result.output
 
 
 def test_bare_cli_boots_wizard(fake_repo: Path):
@@ -135,7 +135,7 @@ def test_bare_cli_boots_wizard(fake_repo: Path):
     # check type "3" = both, attacks "all" -> runs the whole pipeline
     assert result.exit_code == 0, result.output
     assert "GitHub repo URL" in result.output or "Protocol source" in result.output
-    assert "Hunt Complete" in result.output
+    assert "HUNT COMPLETE" in result.output
 
 
 # --- GitHub org repo listing (llama depth step) -----------------------------
