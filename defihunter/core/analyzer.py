@@ -64,11 +64,22 @@ def _is_guarded(ctx: str) -> bool:
     OZ initializer guards, require()/hasRole/_checkRole/_msgSender checks.
     NOTE: bare 'owner'/'sender' are intentionally NOT guards — an owner_
     parameter is normal and does not protect the function.
+
+    Comments are stripped first: "// no onlyOwner" describes the code, it
+    does not guard it — comment text must never count as guard evidence.
     """
+    ctx = _strip_comments(ctx)
     return bool(re.search(
         r"only[A-Z]\w*|initializer\b|onlyInitializing|whenNotInitialized|"
         r"whenNotPaused|require\s*\(|_msgSender|hasRole\s*\(|_checkRole\s*\(",
         ctx))
+
+
+def _strip_comments(text: str) -> str:
+    """Remove /* */ block comments and // line comments from Solidity text."""
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
+    text = re.sub(r"//[^\n]*", " ", text)
+    return text
 
 
 def _is_interface(rel: str) -> bool:

@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.22"
+__version__ = "1.3.23"
 
 
 def _banner():
@@ -279,6 +279,52 @@ def repo(ctx, target, rpc, as_json, no_fork):
         ("findings", str(len(findings))),
         ("fork-verified", f"{len(fork_results)} run, {fork_ok} exploitable"),
     ], level=ui.threat_level(all_findings, analyzed=True))
+
+
+@cli.command()
+@click.option('--json', 'as_json', is_flag=True, help='Emit machine-readable JSON for CI')
+def benchmark(as_json):
+    """Score the analyzer against historical exploits (DAO, Parity, OZ…).
+
+    Analyzes a built-in corpus of real vulnerability classes and reports
+    how many the static engine detects — plus false positives on a clean,
+    properly-guarded vault. No network or RPC needed.
+    """
+    from defihunter.core.benchmark import run_benchmark, summarize
+    ui.rule("HISTORICAL-EXPLOIT BENCHMARK")
+    with ui.spinner("Analyzing exploit corpus"):
+        results = run_benchmark()
+
+    if as_json:
+        print(json.dumps([{k: r[k] for k in
+                           ("id", "ref", "control", "detected", "missed")}
+                          for r in results], indent=2))
+        return
+
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich import box as _box
+    table = Table(box=_box.ROUNDED, border_style="cyan",
+                  header_style="bold cyan", expand=True)
+    table.add_column("CASE", style="bold white", max_width=28, overflow="fold")
+    table.add_column("HISTORICAL REFERENCE", style="dim", overflow="fold")
+    table.add_column("RESULT", justify="center")
+    for r in results:
+        tag = "control" if r["control"] else "exploit"
+        verdict = ("✅ DETECTED" if r["detected"]
+                   else "❌ MISSED" if not r["control"]
+                   else "❌ FALSE POSITIVE")
+        table.add_row(f"{r['id']}  ({tag})", r["ref"], verdict)
+    ui.console.print(table)
+    ui.console.print()
+
+    s = summarize(results)
+    title = (f"Detected {s['detected']}/{s['total']} historical exploit "
+             f"classes ({s['pct']}%) — {s['false_positives']} false "
+             f"positive(s) on the clean vault")
+    ui.console.print(Panel(title, border_style="bright_green"
+                           if s["detected"] == s["total"] else "bright_red",
+                           box=_box.DOUBLE, expand=False))
 
 
 @cli.group()

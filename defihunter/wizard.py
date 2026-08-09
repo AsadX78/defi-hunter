@@ -302,9 +302,13 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
          mainnet addresses (e.g. eigenlayer's mainnet.json deployment map).
     """
     ui.rule("FORK VERIFICATION")
-    verifiable = [f for f in findings if f.get("attack") in ("mint", "initialize", "delegatecall")]
+    verifiable = [f for f in findings
+                  if f.get("attack") in ("mint", "initialize", "delegatecall",
+                                         "reentrancy", "arbitrarycall",
+                                         "approve", "selfdestruct")]
     if not verifiable:
-        ui.info("No callable-by-anyone findings (mint/initialize/delegatecall) to fork-verify.")
+        ui.info("No callable-by-anyone findings (mint/initialize/delegatecall/…)"
+                " to fork-verify.")
         return []
 
     # 1) file (repo-relative) -> deployed addresses that mention it in source

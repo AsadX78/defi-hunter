@@ -181,6 +181,99 @@ class TestForkSimulator:
         assert not res["success"]
         assert "no bytecode" in res["evidence"]
 
+    def _ready_fork(self, monkeypatch, target):
+        """ForkSimulator that is 'live' but with all cast calls stubbed."""
+        fork = ForkSimulator(rpc_url="http://127.0.0.1:8545")
+        fork.available = True
+        monkeypatch.setattr(fork, "_has_code", lambda: True)
+        return fork
+
+    def _fake_send(self, ok_for=()):
+        calls = []
+
+        def send(selector, args):
+            calls.append(selector)
+            return {"ok": selector in ok_for, "stdout": "0x",
+                    "stderr": ""}
+        return calls, send
+
+    def test_reentrancy_proof_hits_payout_sink(self, monkeypatch):
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        calls, send = self._fake_send(ok_for={"withdraw()"})
+        monkeypatch.setattr(fork, "_send", send)
+        res = fork.run("reentrancy", "0x1111")
+        assert res["success"]
+        assert "withdraw()" in res["evidence"]
+        assert any("withdraw(uint256)" in c for c in calls)
+
+    def test_reentrancy_proof_no_sink(self, monkeypatch):
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        calls, send = self._fake_send()  # nothing mines
+        monkeypatch.setattr(fork, "_send", send)
+        res = fork.run("reentrancy", "0x1111")
+        assert not res["success"]
+        assert "No permissionless payout sink" in res["evidence"]
+
+    def test_arbitrarycall_proof_forwarder(self, monkeypatch):
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        calls = []
+
+        def call(selector, args, extra_from=True):
+            calls.append(selector)
+            return {"ok": selector == "execute(address,bytes)",
+                    "stdout": "0x", "stderr": ""}
+        monkeypatch.setattr(fork, "_call", call)
+        res = fork.run("arbitrarycall", "0x1111")
+        assert res["success"]
+        assert "execute(address,bytes)" in res["evidence"]
+        assert "attacker" in res["profit"].lower()
+
+    def test_approve_proof_grants_allowance(self, monkeypatch):
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        calls, send = self._fake_send(ok_for={"approve(address,uint256)"})
+        monkeypatch.setattr(fork, "_send", send)
+        monkeypatch.setattr(
+            fork, "_call",
+            lambda sel, args, extra_from=True:
+                {"ok": True, "stdout": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+                 "stderr": ""})
+        res = fork.run("approve", "0x1111")
+        assert res["success"]
+        assert "allowance(target→attacker) > 0" in res["evidence"]
+
+    def test_selfdestruct_proof_transfers_balance(self, monkeypatch):
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        calls, send = self._fake_send(ok_for={"kill()"})
+        monkeypatch.setattr(fork, "_send", send)
+        code_after = [True]
+
+        def has_code():
+            return code_after[0]
+        monkeypatch.setattr(fork, "_has_code", has_code)
+        monkeypatch.setattr(fork, "_balance", lambda addr: "500000000000000000")
+        res = fork.run("selfdestruct", "0x1111")
+        assert res["success"]
+        assert "kill() mined" in res["evidence"]
+        assert "→" in res["evidence"]  # state-diff before → after
+
+    def test_mint_evidence_has_state_diff(self, monkeypatch):
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        monkeypatch.setattr(fork, "_send",
+                            lambda sel, args: {"ok": True, "stdout": "0x", "stderr": ""})
+        monkeypatch.setattr(fork, "_call",
+                            lambda sel, args, extra_from=True:
+                                {"ok": True, "stdout": "1000000000000000000000000",
+                                 "stderr": ""})
+        res = fork.run("mint", "0x1111")
+        assert res["success"]
+        assert "→" in res["evidence"]  # balance before → after
+
 
 def _render(renderable) -> str:
     """Render any rich renderable to plain text for assertions."""
