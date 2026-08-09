@@ -185,6 +185,9 @@ def _repo_ca_score(repo: Dict[str, object]) -> tuple:
     Uses ONLY the file tree — README fetching was dropped because it doubled
     the GitHub API call count (30/menu) and the strong signals (deployments/,
     broadcast/, script/output/, addresses.json, .sol) all live in the tree.
+    On top of the tree score, source-code metadata gets a preference bump
+    (see source_code_bonus): a Solidity repo is the attack surface itself,
+    while a deployer tool merely runs the deployments.
     """
     name = repo["name"]
     branch = repo.get("default_branch") or "main"
@@ -195,7 +198,28 @@ def _repo_ca_score(repo: Dict[str, object]) -> tuple:
         t["path"] for t in (tree or {}).get("tree", [])
         if isinstance(t, dict) and isinstance(t.get("path"), str)
     ]
-    return name, score_repo_for_ca(paths, "")
+    return name, score_repo_for_ca(paths, "") + source_code_bonus(repo)
+
+
+_SOURCE_LANG_RE = re.compile(r"^(solidity|vyper)$", re.IGNORECASE)
+_SOURCE_NAME_RE = re.compile(r"(contracts|core|protocol|solidity)", re.IGNORECASE)
+
+
+def source_code_bonus(repo: Dict[str, object]) -> int:
+    """Preference bonus for repos that are actual contract source code.
+
+    Deployer tooling (scripts, CI, .github/) can match the same file-tree
+    signals as the real codebase, so the tree score alone lets a tool like
+    a deployer outrank the canonical contracts repo. A repo written in
+    Solidity/Vyper IS the attack surface, and a name like
+    'eigenlayer-contracts' is a strong hint too — give those a small bump so
+    they float above the tooling in the wizard's picker.
+    """
+    if _SOURCE_LANG_RE.match(repo.get("language") or ""):
+        return 2
+    if _SOURCE_NAME_RE.search(repo.get("name", "")):
+        return 1
+    return 0
 
 
 def score_repo_for_ca(paths: List[str], readme: str = "") -> int:
@@ -244,7 +268,9 @@ def detect_ca_repos(repos: List[Dict[str, object]], workers: int = 8) -> Dict[st
     score 0). Results are cached per repo-set so the same org menu is free
     afterwards. Returns {full_name: score} — used by the wizard to rank the
     org repo menu so the user doesn't have to guess which repo holds the
-    deployed addresses.
+    deployed addresses. Solidity/Vyper source repos get a small preference
+    bump on top of the file-tree score (see source_code_bonus), so the
+    canonical contracts repo ranks above deployer tooling.
     """
     key = frozenset(r["name"] for r in repos[:15])
     if key in _detect_cache:

@@ -544,3 +544,54 @@ def test_llama_scan_survives_deep_clone_failure(monkeypatch):
     assert scan["contracts"]["0xec53bf9167f50cdeb3ae105f56099aaab9061f83"]["identity"] == "mismatch"
     assert "deep_repo" not in scan
     assert scan["repo_dir"] == "(addresses)"
+
+
+def test_source_code_bonus_solidity():
+    """Solidity/Vyper repos are the attack surface — get the +2 bump."""
+    from defihunter.core.github import source_code_bonus
+    assert source_code_bonus({"name": "Layr-Labs/eigenlayer-contracts", "language": "Solidity"}) == 2
+    assert source_code_bonus({"name": "vyper-playground", "language": "Vyper"}) == 2
+
+
+def test_source_code_bonus_name_hint():
+    """A 'contracts'-named repo with no language metadata still gets +1."""
+    from defihunter.core.github import source_code_bonus
+    assert source_code_bonus({"name": "Layr-Labs/eigenlayer-contracts", "language": ""}) == 1
+    assert source_code_bonus({"name": "protocol-core", "language": "TypeScript"}) == 1
+
+
+def test_source_code_bonus_none_for_tooling():
+    """Deployer/docs tooling with no source hints gets no bump."""
+    from defihunter.core.github import source_code_bonus
+    assert source_code_bonus({"name": "Layr-Labs/zeus", "language": "Go"}) == 0
+    assert source_code_bonus({"name": "docs", "language": "HTML"}) == 0
+    assert source_code_bonus({"name": "", "language": ""}) == 0
+
+
+def test_repo_score_includes_source_bonus(monkeypatch):
+    """The bonus is load-bearing: thin Solidity source beats deployer tooling.
+
+    Without the bonus the tool scores 3 (deploy/ + script/output/) and the
+    source repo 2 (foundry.toml + .sol) — tool wins. The +2 Soliditity bump
+    flips it to 4 vs 3, which is exactly the nudge the picker needs.
+    """
+    from defihunter.core.github import _repo_ca_score
+
+    def fake_get_json(url, attempts=2, timeout=10):
+        if "zeus" in url:
+            # deployer tooling: deploy script + output dir, no source code
+            return {"tree": [{"path": ".github/workflows/ci.yml"},
+                             {"path": "deploy/zeus.ts"},
+                             {"path": "script/output/main.json"}]}
+        # eigenlayer-contracts: thin but real Solidity source
+        return {"tree": [{"path": "src/StrategyManager.sol"},
+                         {"path": "foundry.toml"}]}
+
+    monkeypatch.setattr("defihunter.core.github._github_get_json", fake_get_json)
+    zeus = _repo_ca_score({"name": "Layr-Labs/zeus", "default_branch": "main", "language": "Go"})
+    contracts = _repo_ca_score({
+        "name": "Layr-Labs/eigenlayer-contracts", "default_branch": "main", "language": "Solidity"})
+    # without the bonus this fails (3 > 2); with it the source repo wins
+    assert contracts[1] > zeus[1]
+    assert zeus[1] == 3
+    assert contracts[1] == 4

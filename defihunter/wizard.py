@@ -310,7 +310,8 @@ def _pick_org_repo(org: str) -> Optional[str]:
     if ca_count:
         ui.info(f"✓ marked {ca_count} repo(s) likely to contain the deployed "
                 "contract addresses (deployments/, broadcast/, addresses.json…). "
-                "Usually that's the one you want.")
+                "Solidity/Vyper source repos rank higher, so the canonical "
+                "contracts repo usually floats to the top.")
     while True:
         ans = Prompt.ask(
             "[step]Pick a repo number[/] [muted](or 'skip')[/]", default="skip"
