@@ -15,9 +15,10 @@ import json
 import subprocess
 import os
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from rich.prompt import Confirm, Prompt
 from rich.text import Text
@@ -285,6 +286,49 @@ def _print_attack_routes(findings: List[Dict]) -> None:
             [(f"attack route", r) for r in sorted(set(routes))],
             title="Chained Attack Routes",
         ))
+
+
+DEFAULT_ATTACKER = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+
+
+def is_eoa(addr: str) -> bool:
+    """True for a well-formed Ethereum EOA address (0x + 40 hex chars)."""
+    return (isinstance(addr, str) and len(addr) == 42 and
+            addr[:2].lower() == "0x" and
+            all(c in "0123456789abcdefABCDEF" for c in addr[2:]))
+
+
+def resolve_wallets(attacker: Optional[str] = None,
+                    profit_wallet: Optional[str] = None,
+                    no_fork: bool = False) -> Tuple[Optional[str], Optional[str]]:
+    """Fill missing attacker / profit-wallet config interactively.
+
+    Prompts at the START of a session for anything not passed as a flag.
+    Silently returns the current values when stdin isn't a TTY (CI / pipes)
+    or when fork verification is disabled — no hang, no pointless questions.
+    """
+    if no_fork or not sys.stdin.isatty():
+        return attacker, profit_wallet
+
+    def _ask(prompt_text: str, default: str) -> str:
+        while True:
+            try:
+                value = Prompt.ask(prompt_text, default=default)
+            except (EOFError, KeyboardInterrupt):
+                raise
+            if is_eoa(value):
+                return value
+            ui.error(f"Not a valid Ethereum address: {value!r} "
+                     f"(need 0x + 40 hex chars) — try again")
+
+    ui.info("Wallet config for the on-chain proof (Enter = default)")
+    if not attacker:
+        attacker = _ask("Attacker EOA — signs the fork proof txs",
+                        DEFAULT_ATTACKER)
+    if not profit_wallet:
+        profit_wallet = _ask("Profit wallet — drained ETH is swept here",
+                             attacker or DEFAULT_ATTACKER)
+    return attacker, profit_wallet
 
 
 def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
@@ -609,6 +653,8 @@ def run_wizard(
     check: Optional[str] = None,
     attacks: Optional[List[str]] = None,
     version: str = "",
+    attacker: Optional[str] = None,
+    profit_wallet: Optional[str] = None,
 ) -> None:
     """Boot the guided hunt. Pass repo_url/check/attacks to skip those prompts."""
     ui.intro(version)
@@ -705,8 +751,11 @@ def run_wizard(
     if check in ("static", "both"):
         findings = _run_static(scan, contracts, rpc=rpc)
         if findings and not os.environ.get("DEFIHUNTER_SKIP_FORK"):
+            attacker, profit_wallet = resolve_wallets(attacker, profit_wallet)
             fork_results = _run_fork_verify(findings, contracts, rpc=rpc,
-                                            repo_dir=scan.get("repo_dir"))
+                                            repo_dir=scan.get("repo_dir"),
+                                            attacker=attacker,
+                                            profit_wallet=profit_wallet)
     if check in ("simulate", "both"):
         sim_results = _run_simulate(contracts, attacks, rpc=rpc)
 

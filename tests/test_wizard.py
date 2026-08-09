@@ -1,5 +1,7 @@
 """Tests for the GitHub repo scanner + interactive wizard."""
 import json
+import sys
+
 import pytest
 from pathlib import Path
 
@@ -840,3 +842,59 @@ class TestForkVerifyDeploymentResolution:
         }
         results = wizard._run_fork_verify([finding], {}, None, repo_dir=str(tmp_path))
         assert results == []
+
+
+class TestWalletResolution:
+    def test_is_eoa_accepts_valid_and_rejects_garbage(self):
+        from defihunter import wizard
+        assert wizard.is_eoa("0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC")
+        assert not wizard.is_eoa("0x1234")
+        assert not wizard.is_eoa("not-an-address")
+        assert not wizard.is_eoa("")
+        assert not wizard.is_eoa("0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC99")
+
+    def test_non_tty_returns_values_unchanged(self, monkeypatch):
+        from defihunter import wizard
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+        assert wizard.resolve_wallets(None, None, no_fork=False) == (None, None)
+        assert wizard.resolve_wallets("0x1111111111111111111111111111111111111111",
+                                      None, no_fork=False) == \
+            ("0x1111111111111111111111111111111111111111", None)
+
+    def test_no_fork_skips_prompt_even_on_tty(self, monkeypatch):
+        from defihunter import wizard
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        assert wizard.resolve_wallets(None, None, no_fork=True) == (None, None)
+
+    def test_prompts_missing_wallets_on_tty(self, monkeypatch):
+        from defihunter import wizard
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(
+            wizard.Prompt, "ask",
+            lambda *a, **k: ("0x2222222222222222222222222222222222222222"
+                             if "Attacker" in a[0] else
+                             "0x3333333333333333333333333333333333333333"))
+        a, p = wizard.resolve_wallets(None, None, no_fork=False)
+        assert a == "0x2222222222222222222222222222222222222222"
+        assert p == "0x3333333333333333333333333333333333333333"
+
+    def test_re_prompts_after_invalid_input(self, monkeypatch):
+        from defihunter import wizard
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        answers = iter(["bad-address",
+                        "0x2222222222222222222222222222222222222222",
+                        "0x3333333333333333333333333333333333333333"])
+        monkeypatch.setattr(wizard.Prompt, "ask", lambda *a, **k: next(answers))
+        a, p = wizard.resolve_wallets(None, None, no_fork=False)
+        assert a == "0x2222222222222222222222222222222222222222"
+        assert p == "0x3333333333333333333333333333333333333333"
+
+    def test_profit_wallet_defaults_to_attacker_flag(self, monkeypatch):
+        from defihunter import wizard
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(wizard.Prompt, "ask",
+                            lambda *a, **k: "0x4444444444444444444444444444444444444444")
+        a, p = wizard.resolve_wallets(
+            "0x2222222222222222222222222222222222222222", None, no_fork=False)
+        assert a == "0x2222222222222222222222222222222222222222"
+        assert p == "0x4444444444444444444444444444444444444444"

@@ -6,7 +6,7 @@ from pathlib import Path
 def test_import():
     """Test package import"""
     import defihunter
-    assert defihunter.__version__ == "1.3.27"
+    assert defihunter.__version__ == "1.3.28"
 
 def test_config_load():
     """Test config loading"""

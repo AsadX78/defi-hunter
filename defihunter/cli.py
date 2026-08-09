@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.27"
+__version__ = "1.3.28"
 
 
 def _banner():
@@ -50,12 +50,22 @@ def cli(ctx, config, verbose, no_intro):
 @click.option('--repo', '-r', default=None, help='GitHub repo URL, local folder, 0x addresses, or llama:<protocol-name> (skips the repo prompt)')
 @click.option('--check', '-c', type=click.Choice(['static', 'simulate', 'both']), default=None, help='Vulnerability check type (skips the prompt)')
 @click.option('--attacks', '-a', default=None, help='Comma-separated attack names for simulation (e.g. initialize,admin)')
-def wizard(repo, check, attacks):
+@click.option('--attacker', help='EOA that signs the fork proof txs '
+              '(prompted if missing, default anvil dev account 0x3C44…)')
+@click.option('--profit-wallet', help='Wallet the attacker-contract drain is '
+              'swept to (prompted if missing, default: the attacker EOA)')
+def wizard(repo, check, attacks, attacker, profit_wallet):
     """Interactive guided hunt: GitHub repo → contracts → vulnerability checks"""
-    from defihunter.wizard import run_wizard
+    from defihunter.wizard import run_wizard, is_eoa
+    for name, val in (("attacker", attacker), ("profit-wallet", profit_wallet)):
+        if val and not is_eoa(val):
+            raise click.ClickException(
+                f"Invalid --{name} value {val!r} — need an Ethereum address "
+                f"(0x + 40 hex chars)")
     attack_list = [a.strip() for a in attacks.split(',') if a.strip()] if attacks else None
     run_wizard(verbose=False, repo_url=repo, check=check, attacks=attack_list,
-               version=__version__)
+               version=__version__, attacker=attacker,
+               profit_wallet=profit_wallet)
 
 
 @cli.group()
@@ -289,9 +299,9 @@ def repo(ctx, target, rpc, as_json, no_fork):
               help='JSON report path (default defihunter-scan.json)')
 @click.option('--no-fork', is_flag=True, help='Skip fork verification')
 @click.option('--attacker', help='EOA that signs the fork proof txs '
-              '(default anvil dev account 0x3C44…)')
+              '(prompted at scan start if missing; default anvil dev 0x3C44…)')
 @click.option('--profit-wallet', help='Wallet the attacker-contract drain is '
-              'swept to (default: the attacker EOA)')
+              'swept to (prompted at scan start if missing; default: the attacker EOA)')
 @click.option('--fail-on', type=click.Choice(['none', 'high', 'critical']),
               default='high', show_default=True,
               help='Exit code threshold: none=never fail, high=fail on any '
@@ -311,11 +321,24 @@ def scan(target, rpc, output, no_fork, fail_on, attacker, profit_wallet):
     """
     from defihunter.core.analyzer import analyze_repo_dir
     from defihunter.core.github import clone, extract_addresses
-    from defihunter.wizard import _run_fork_verify
+    from defihunter.wizard import _run_fork_verify, resolve_wallets, is_eoa
     from datetime import datetime as _dt
 
     ui.rule("SCAN")
     ui.step("Target", target)
+
+    # wallet config: validate flags, then prompt for anything missing at the
+    # START of the session (silently skipped on non-TTY / --no-fork)
+    for name, val in (("attacker", attacker), ("profit-wallet", profit_wallet)):
+        if val and not is_eoa(val):
+            raise click.ClickException(
+                f"Invalid --{name} value {val!r} — need an Ethereum address "
+                f"(0x + 40 hex chars)")
+    attacker, profit_wallet = resolve_wallets(attacker, profit_wallet,
+                                              no_fork=no_fork)
+    if attacker or profit_wallet:
+        ui.info(f"Fork wallets — attacker: {attacker or '(default)'}, "
+                f"profit: {profit_wallet or '(= attacker)'}")
 
     # 1) static analysis: address scan or repo scan
     is_addr = target.lower().startswith("0x")
