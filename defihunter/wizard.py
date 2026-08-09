@@ -288,7 +288,9 @@ def _print_attack_routes(findings: List[Dict]) -> None:
 
 
 def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
-                     rpc: Optional[str], repo_dir: Optional[str] = None) -> List[Dict]:
+                     rpc: Optional[str], repo_dir: Optional[str] = None,
+                     attacker: Optional[str] = None,
+                     profit_wallet: Optional[str] = None) -> List[Dict]:
     """Prove the callable-by-anyone findings on a real anvil fork.
 
     Static analysis says *possible*; an eth_call from an attacker account on
@@ -357,7 +359,8 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
 
     results: List[Dict] = []
     with ui.spinner("Booting anvil mainnet fork — first state fetch can take ~20s"):
-        with ForkSimulator(rpc_url=rpc) as fork:
+        with ForkSimulator(rpc_url=rpc, attacker=attacker,
+                           profit_wallet=profit_wallet) as fork:
             if not fork.available:
                 ui.warn(fork.why_not)
                 return results

@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.26"
+__version__ = "1.3.27"
 
 
 def _banner():
@@ -288,11 +288,15 @@ def repo(ctx, target, rpc, as_json, no_fork):
 @click.option('--output', '-o', default='defihunter-scan.json',
               help='JSON report path (default defihunter-scan.json)')
 @click.option('--no-fork', is_flag=True, help='Skip fork verification')
+@click.option('--attacker', help='EOA that signs the fork proof txs '
+              '(default anvil dev account 0x3C44…)')
+@click.option('--profit-wallet', help='Wallet the attacker-contract drain is '
+              'swept to (default: the attacker EOA)')
 @click.option('--fail-on', type=click.Choice(['none', 'high', 'critical']),
               default='high', show_default=True,
               help='Exit code threshold: none=never fail, high=fail on any '
                    'CONFIRMED high/critical, critical=fail only on CONFIRMED critical')
-def scan(target, rpc, output, no_fork, fail_on):
+def scan(target, rpc, output, no_fork, fail_on, attacker, profit_wallet):
     """CI-friendly one-shot scan: static analysis + ABI-aware fork proof.
 
     Every finding gets a verdict after fork verification:
@@ -345,7 +349,10 @@ def scan(target, rpc, output, no_fork, fail_on):
     if findings and not no_fork:
         if is_addr:
             contracts = {target: {"address": target, "sources": []}}
-        fork_results = _run_fork_verify(findings, contracts, rpc, repo_dir=repo_dir)
+        fork_results = _run_fork_verify(findings, contracts, rpc,
+                                        repo_dir=repo_dir,
+                                        attacker=attacker,
+                                        profit_wallet=profit_wallet)
 
     # 3) verdicts: CONFIRMED → real; REFUTED → drop from confirmed set;
     #    UNVERIFIED stays as static-only

@@ -724,7 +724,9 @@ class TestForkVerifyAddressFindings:
                 return {"success": True, "attack": attack, "target": target,
                         "verdict": "CONFIRMED",
                         "source_finding": source_finding}
-        monkeypatch.setattr(wizard, "ForkSimulator", lambda rpc_url=None: FakeFork())
+        monkeypatch.setattr(wizard, "ForkSimulator",
+                            lambda rpc_url=None, attacker=None,
+                            profit_wallet=None: FakeFork())
         monkeypatch.setattr(wizard.abi_util, "fetch_abi", lambda addr: [])
         from rich.console import Console
         monkeypatch.setattr(wizard.ui, "console",

