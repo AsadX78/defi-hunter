@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""DeFi Hunter — CLI Entry Point"""
+"""DeFi Hunter — CLI Entry Point (beautified with rich UI layer)."""
 
 import click
 import json
 import sys
 from pathlib import Path
-from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -14,8 +13,16 @@ from defihunter.core.analyzer import ContractAnalyzer
 from defihunter.core.simulator import AttackSimulator
 from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
+from defihunter import ui
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+
+def _banner():
+    """Show the banner only on real terminals (keeps pipes/tests clean)."""
+    if ui.console.is_terminal:
+        ui.banner(__version__)
+
 
 @click.group()
 @click.version_option(__version__)
@@ -27,12 +34,15 @@ def cli(ctx, config, verbose):
     ctx.ensure_object(dict)
     ctx.obj['config'] = load_config(config)
     ctx.obj['verbose'] = verbose
+    _banner()
+
 
 @cli.group()
 @click.pass_context
 def recon(ctx):
     """Discover contracts and map attack surface"""
     pass
+
 
 @recon.command()
 @click.option('--target', '-t', required=True, help='Target domain (e.g., sky.money)')
@@ -43,26 +53,42 @@ def recon(ctx):
 def scan(ctx, target, rpc, deep, output):
     """Scan target for contracts"""
     scanner = ReconScanner(rpc_url=rpc, verbose=ctx.obj['verbose'])
-    
-    click.echo(f"[*] Scanning {target}...")
-    results = scanner.scan(target, deep=deep)
-    
-    click.echo(f"[+] Found {len(results.get('contracts', {}))} contracts")
-    
-    for addr, info in results.get('contracts', {}).items():
-        name = info.get('name', 'Unknown')
-        size = info.get('code_size', 0)
-        click.echo(f"  {addr}: {name} ({size} bytes)")
-    
+
+    ui.rule("RECON")
+    ui.step("Scanning", target)
+    with ui.spinner(f"Scraping {target} for 0x addresses"):
+        results = scanner.scan(target, deep=deep)
+
+    contracts = results.get('contracts', {})
+    total = results.get('total_addresses', 0)
+
+    ui.ok(f"Found {len(contracts)} contracts (from {total} raw addresses)")
+    if contracts:
+        ui.console.print(ui.contracts_table(contracts))
+    else:
+        ui.warn("No contracts found — the target may be a marketing/dapp site.")
+
     if output:
         Path(output).write_text(json.dumps(results, indent=2))
-        click.echo(f"[+] Results saved to {output}")
+        ui.ok(f"Results saved to {output}")
+
+    # Compact summary for scripting/CI
+    ui.console.print()
+    ui.console.print(ui.summary_panel([
+        ("target", results.get('target', target)),
+        ("url", results.get('url', '')),
+        ("raw addresses", str(total)),
+        ("contracts", str(len(contracts))),
+        ("rpc", rpc or "(not provided — code check skipped)"),
+    ]))
+
 
 @cli.group()
 @click.pass_context
 def analyze(ctx):
     """Analyze contract source code for vulnerabilities"""
     pass
+
 
 @analyze.command()
 @click.option('--address', '-a', required=True, help='Contract address')
@@ -71,18 +97,18 @@ def analyze(ctx):
 def contract(ctx, address, rpc):
     """Analyze a specific contract"""
     analyzer = ContractAnalyzer(rpc_url=rpc)
-    
-    click.echo(f"[*] Analyzing {address}...")
-    findings = analyzer.analyze(address)
-    
+
+    ui.rule("ANALYZE")
+    ui.step("Analyzing", address)
+    with ui.spinner("Running vulnerability checks"):
+        findings = analyzer.analyze(address)
+
     if findings:
-        click.echo(f"[!] Found {len(findings)} issues:")
-        for f in findings:
-            sev = f.get('severity', 'UNKNOWN')
-            title = f.get('title', 'Unknown')
-            click.echo(f"  [{sev}] {title}")
+        ui.warn(f"Found {len(findings)} issue(s):")
+        ui.console.print(ui.findings_table(findings))
     else:
-        click.echo("[+] No obvious vulnerabilities found")
+        ui.ok("No obvious vulnerabilities found")
+
 
 @analyze.command()
 @click.option('--target', '-t', required=True, help='Target protocol name')
@@ -93,20 +119,31 @@ def batch(ctx, target, addresses, rpc):
     """Analyze multiple contracts"""
     addrs = [a.strip() for a in addresses.split(',')]
     analyzer = ContractAnalyzer(rpc_url=rpc)
-    
+
+    ui.rule("ANALYZE BATCH")
+    ui.step(f"Target protocol", target)
     all_findings = []
-    for addr in addrs:
-        click.echo(f"[*] Analyzing {addr}...")
-        findings = analyzer.analyze(addr)
-        all_findings.extend(findings)
-    
-    click.echo(f"[!] Total findings: {len(all_findings)}")
+
+    progress, task = ui.progress_bar(len(addrs), "Analyzing contracts")
+    with progress:
+        for addr in addrs:
+            findings = analyzer.analyze(addr)
+            all_findings.extend(findings)
+            progress.advance(task)
+
+    if all_findings:
+        ui.warn(f"Total findings: {len(all_findings)}")
+        ui.console.print(ui.findings_table(all_findings))
+    else:
+        ui.ok(f"Total findings: 0 — {len(addrs)} contract(s) clean")
+
 
 @cli.group()
 @click.pass_context
 def simulate(ctx):
     """Simulate attacks on fork"""
     pass
+
 
 @simulate.command()
 @click.option('--attack', '-a', type=click.Choice(['inflation', 'admin', 'governance', 'oracle', 'reentrancy', 'bridge', 'sandwich', 'twap', 'flashloan', 'withdraw', 'initialize', 'permit', 'liquidation', 'forcesend', 'peg', 'crossfunc', 'delegatecall', 'mint']), required=True)
@@ -117,15 +154,14 @@ def simulate(ctx):
 def run(ctx, attack, target, rpc, block):
     """Run attack simulation"""
     simulator = AttackSimulator(rpc_url=rpc, block=block)
-    
-    click.echo(f"[*] Simulating {attack} attack on {target}...")
-    result = simulator.run(attack, target)
-    
-    if result.get('success'):
-        click.echo(f"[+] Attack successful!")
-        click.echo(f"    Profit: {result.get('profit', 'N/A')}")
-    else:
-        click.echo(f"[-] Attack failed: {result.get('error', 'Unknown')}")
+
+    ui.rule("SIMULATE")
+    ui.step(f"Attack {attack}", target)
+    with ui.spinner(f"Simulating {attack} attack"):
+        result = simulator.run(attack, target)
+
+    ui.console.print(ui.attack_summary(result, attack, target))
+
 
 @cli.command()
 @click.option('--input', '-i', required=True, help='Input findings JSON')
@@ -134,11 +170,15 @@ def run(ctx, attack, target, rpc, block):
 def report(input, output, format):
     """Generate report from findings"""
     gen = ReportGenerator()
-    
+
     findings = json.loads(Path(input).read_text())
-    report_path = gen.generate(findings, format=format, output=output)
-    
-    click.echo(f"[+] Report saved to {report_path}")
+    ui.rule("REPORT")
+    ui.step("Generating", f"{format} → {output}")
+    with ui.spinner("Rendering report"):
+        report_path = gen.generate(findings, format=format, output=output)
+
+    ui.ok(f"Report saved to {report_path}")
+
 
 @cli.group()
 @click.pass_context
@@ -146,20 +186,22 @@ def templates(ctx):
     """Explore and verify attack templates"""
     pass
 
+
 @templates.command('list')
 @click.option('--type', '-t', type=click.Choice(['vault', 'amm', 'lending', 'bridge', 'governance', 'stablecoin', 'token', 'proxy', 'all']), default='all')
 def templates_list(type):
     """List available attack templates"""
     from defihunter.templates import TEMPLATES
-    
-    click.echo("Available attack templates:\n")
-    for name, template in TEMPLATES.items():
-        if type == 'all' or template.get('type') == type:
-            click.echo(f"  {name}")
-            click.echo(f"    Type: {template.get('type')}")
-            click.echo(f"    Severity: {template.get('severity')}")
-            click.echo(f"    Description: {template.get('description')}")
-            click.echo()
+
+    selected = {name: tpl for name, tpl in TEMPLATES.items()
+                if type == 'all' or tpl.get('type') == type}
+
+    ui.rule("TEMPLATES")
+    ui.console.print(ui.templates_table(selected))
+    ui.console.print()
+    ui.ok(f"{len(selected)} template(s) available"
+          + ("" if type == 'all' else f" (type: {type})"))
+
 
 @templates.command('verify')
 @click.option('--lab-dir', '-l', type=click.Path(), help='Path to the Foundry lab (defaults to <package root>/../lab)')
@@ -173,11 +215,15 @@ def templates_verify(lab_dir):
         raise click.ClickException(
             f"No Foundry lab found at {lab}. Run scripts/export_templates.py then forge build first."
         )
-    click.echo(f"[*] Verifying {len(TEMPLATES)} templates against lab {lab}...")
-    proc = subprocess.run(['forge', 'test'], cwd=str(lab))
+    ui.rule("VERIFY")
+    ui.step("Foundry lab", str(lab))
+    ui.info(f"Verifying {len(TEMPLATES)} templates — this runs `forge test`")
+    with ui.spinner("forge test"):
+        proc = subprocess.run(['forge', 'test'], cwd=str(lab))
     if proc.returncode != 0:
         raise click.ClickException("Template verification FAILED (see forge output above)")
-    click.echo("[+] All template exploits verified")
+    ui.ok("All template exploits verified")
+
 
 if __name__ == '__main__':
     cli()
