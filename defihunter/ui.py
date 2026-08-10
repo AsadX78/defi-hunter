@@ -1,10 +1,10 @@
-"""DeFi Hunter — UI layer.
+"""DeFi Hunter -- UI layer.
 
 Central place for all terminal output: colors, panels, tables, spinners and
 the CLI banner. Every command in cli.py should render through here so the
 look & feel stays consistent while the rest of the toolkit grows.
 
-Depends only on `rich` — no core logic lives here.
+Depends only on `rich` -- no core logic lives here.
 """
 from __future__ import annotations
 
@@ -32,30 +32,31 @@ from rich.align import Align
 from rich.rule import Rule
 
 # ---------------------------------------------------------------------------
-# Theme — Professional dark hacker aesthetic
+# Theme -- Muted hacker terminal aesthetic
+# CRT phosphor green, amber, dim red -- no bright neons
 # ---------------------------------------------------------------------------
 THEME = Theme(
     {
-        "banner": "bold bright_cyan",
+        "banner": "bold green",
         "cmd": "bold white",
-        "step": "bold bright_blue",
-        "ok": "bold bright_green",
-        "warn": "bold bright_yellow",
-        "err": "bold bright_red",
+        "step": "bold green",
+        "ok": "bold green",
+        "warn": "bold yellow",
+        "err": "bold red",
         "muted": "dim white",
-        "addr": "bright_cyan",
-        "accent": "bold bright_magenta",
-        "success": "bold bright_green",
-        "fail": "bold bright_red",
-        "highlight": "bold bright_white",
-        "fire": "bold bright_red on dark_red",
-        "neon": "bold bright_green",
-        "cyber": "bold bright_cyan",
-        # severity colors
-        "sev.CRITICAL": "bold bright_white on bright_red",
-        "sev.HIGH": "bold bright_red",
-        "sev.MEDIUM": "bold bright_yellow",
-        "sev.LOW": "bright_cyan",
+        "addr": "green",
+        "accent": "bold yellow",
+        "success": "bold green",
+        "fail": "bold red",
+        "highlight": "bold white",
+        "fire": "bold red on dark_red",
+        "neon": "bold green",
+        "cyber": "bold green",
+        # severity colors -- muted, no bright neons
+        "sev.CRITICAL": "bold white on red",
+        "sev.HIGH": "bold red",
+        "sev.MEDIUM": "bold yellow",
+        "sev.LOW": "green",
         "sev.INFO": "dim white",
     }
 )
@@ -64,29 +65,26 @@ console = Console(theme=THEME, highlight=False, force_terminal=True)
 err_console = Console(theme=THEME, stderr=True, force_terminal=True)
 
 # ---------------------------------------------------------------------------
-# Professional ASCII Banner
+# Hacker ASCII Banner -- box-drawing double-line style
 # ---------------------------------------------------------------------------
 
 BANNER = r"""
- ██████╗ ███████╗███████╗██╗      ██╗  ██╗██╗   ██╗███╗   ██╗████████╗███████╗██████╗ 
- ██╔══██╗██╔════╝██╔════╝██║      ██║  ██║██║   ██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗
- ██████╔╝█████╗  █████╗  ██║      ███████║██║   ██║██╔██╗ ██║   ██║   █████╗  ██████╔╝
- ██╔══██╗██╔══╝  ██╔══╝  ██║      ██╔══██║██║   ██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗
- ██║  ██║███████╗██║     ███████╗██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║
- ╚═╝  ╚═╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝"""
+  ╔═╗╦ ╦╦═╗╔═╗╔╦╗╔═╗╔╦╗  ╔═╗╦ ╦╔═╗╔╗ ╔═╗╔═╗╦═╗╔╦╗
+  ╠═╣║ ║╠╦╝╠═╣ ║ ╠═╣ ║║  ║  ╠═╣║╣ ╠╩╗║╣ ║╣ ╠╦╝║║║
+  ╩ ╩╚═╝╩╚═╩ ╩ ╩ ╩ ╩═╩╝  ╚═╝╩ ╩╚═╝╚═╝╚═╝╚═╝╩╚═╩ ╩"""
 
-TAGLINE = "⚡ WORLD RECORD DeFi ATTACK TOOLKIT 🥵"
-SUBTITLE = "the only toolkit that fork-proves every HIGH finding on a live mainnet clone"
+TAGLINE = ":: DEFi EXPLOIT TOOLKIT ::"
+SUBTITLE = "fork-proves every finding on a live mainnet clone"
 
 SEVERITY_ORDER = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
 
-# Severity icons
+# Hacker symbols -- no emojis
 SEV_ICONS = {
-    "CRITICAL": "🔴",
-    "HIGH": "🟠",
-    "MEDIUM": "🟡",
-    "LOW": "🔵",
-    "INFO": "⚪",
+    "CRITICAL": "!!!",
+    "HIGH": "!! ",
+    "MEDIUM": "!  ",
+    "LOW": ".  ",
+    "INFO": "-  ",
 }
 
 
@@ -97,38 +95,37 @@ SEV_ICONS = {
 
 def banner(version: str = "") -> None:
     """Print the DeFi Hunter banner + tagline."""
-    # Main banner with glow effect
     console.print()
     console.print(Panel(
         Text(BANNER.strip("\n"), style="banner"),
-        border_style="bright_cyan",
-        box=box.DOUBLE,
+        border_style="green",
+        box=box.SIMPLE,
         padding=(0, 1),
     ))
 
-    # Tagline with fire effect
+    # Tagline
     tagline_text = Text()
-    tagline_text.append(f"  {TAGLINE}", style="bold bright_yellow")
+    tagline_text.append(f"  {TAGLINE}", style="bold yellow")
     if version:
-        tagline_text.append(f"  ·  v{version}", style="dim bright_white")
+        tagline_text.append(f"  // v{version}", style="dim white")
     console.print(Align.center(tagline_text))
 
     # Subtitle
-    console.print(Align.center(Text(f"  {SUBTITLE}", style="dim bright_cyan")))
+    console.print(Align.center(Text(f"  {SUBTITLE}", style="dim green")))
     console.print()
 
-    # Stats bar
-    stats = Table.grid(padding=(0, 2))
+    # Stats bar -- minimal, no emojis
+    stats = Table.grid(padding=(0, 3))
     stats.add_column(style="dim")
-    stats.add_column(style="bold bright_green")
+    stats.add_column(style="bold green")
     stats.add_column(style="dim")
-    stats.add_column(style="bold bright_cyan")
+    stats.add_column(style="bold yellow")
     stats.add_column(style="dim")
-    stats.add_column(style="bold bright_magenta")
+    stats.add_column(style="bold green")
     stats.add_row(
-        "🔍", "20 ATTACK TYPES",
-        "⚡", "LIVE FORK PROOF",
-        "🎯", "READY-TO-RUN EXPLOITS",
+        ">>>", "20 ATTACKS",
+        ">>>", "LIVE FORK",
+        ">>>", "EXPLOITS",
     )
     console.print(Align.center(stats))
     console.print()
@@ -137,9 +134,9 @@ def banner(version: str = "") -> None:
 def scan_header(protocol: str = "", chain: str = "") -> None:
     """Print a scan header with protocol info."""
     console.print()
-    console.rule(Text(f"🔍 SCANNING: {protocol}", style="bold bright_cyan"))
+    console.rule(Text(f">>> SCANNING: {protocol}", style="bold green"))
     if chain:
-        console.print(f"  [dim]Chain:[/] [bold]{chain}[/]")
+        console.print(f"  [dim]chain:[/] [bold]{chain}[/]")
     console.print()
 
 
@@ -147,16 +144,16 @@ def vuln_header(count: int = 0, severity: str = "") -> None:
     """Print vulnerability discovery header."""
     console.print()
     if count > 0:
-        style = "bold bright_red" if severity in ("CRITICAL", "HIGH") else "bold bright_yellow"
+        style = "bold red" if severity in ("CRITICAL", "HIGH") else "bold yellow"
         console.print(Panel(
-            f"[{style}]🚨 FOUND {count} VULNERABILITY(IES)[/]",
+            f"[{style}]!!! FOUND {count} VULNERABILITY(IES)[/]",
             border_style=style.split()[-1],
             box=box.HEAVY,
         ))
     else:
         console.print(Panel(
-            "[bold bright_green]✅ NO VULNERABILITIES FOUND[/]",
-            border_style="bright_green",
+            "[bold green][+] NO VULNERABILITIES FOUND[/]",
+            border_style="green",
             box=box.HEAVY,
         ))
     console.print()
@@ -165,18 +162,18 @@ def vuln_header(count: int = 0, severity: str = "") -> None:
 def exploit_header(attack_type: str = "", target: str = "") -> None:
     """Print exploit generation header."""
     console.print()
-    console.rule(Text(f"⚔️  GENERATING EXPLOIT: {attack_type.upper()}", style="bold bright_red"))
+    console.rule(Text(f">>> GENERATING EXPLOIT: {attack_type.upper()}", style="bold red"))
     if target:
-        console.print(f"  [dim]Target:[/] [bold bright_cyan]{target}[/]")
+        console.print(f"  [dim]target:[/] [bold green]{target}[/]")
     console.print()
 
 
 def success_box(message: str) -> None:
     """Print a success box."""
     console.print(Panel(
-        f"[bold bright_green]✅ {message}[/]",
-        border_style="bright_green",
-        box=box.DOUBLE,
+        f"[bold green][+] {message}[/]",
+        border_style="green",
+        box=box.SIMPLE,
         padding=(0, 2),
     ))
 
@@ -184,9 +181,9 @@ def success_box(message: str) -> None:
 def error_box(message: str) -> None:
     """Print an error box."""
     console.print(Panel(
-        f"[bold bright_red]❌ {message}[/]",
-        border_style="bright_red",
-        box=box.DOUBLE,
+        f"[bold red][-] {message}[/]",
+        border_style="red",
+        box=box.SIMPLE,
         padding=(0, 2),
     ))
 
@@ -194,9 +191,9 @@ def error_box(message: str) -> None:
 def warning_box(message: str) -> None:
     """Print a warning box."""
     console.print(Panel(
-        f"[bold bright_yellow]⚠️  {message}[/]",
-        border_style="bright_yellow",
-        box=box.ROUNDED,
+        f"[bold yellow][!] {message}[/]",
+        border_style="yellow",
+        box=box.SIMPLE,
         padding=(0, 2),
     ))
 
@@ -204,34 +201,34 @@ def warning_box(message: str) -> None:
 def info_box(message: str) -> None:
     """Print an info box."""
     console.print(Panel(
-        f"[bold bright_cyan]ℹ️  {message}[/]",
-        border_style="bright_cyan",
-        box=box.ROUNDED,
+        f"[bold green][*] {message}[/]",
+        border_style="green",
+        box=box.SIMPLE,
         padding=(0, 2),
     ))
 
 
 def ok(msg: str) -> None:
-    console.print(f"[ok]✔[/] {msg}")
+    console.print(f"[ok][+][/] {msg}")
 
 
 def warn(msg: str) -> None:
-    console.print(f"[warn]⚠[/] {msg}")
+    console.print(f"[warn][!][/] {msg}")
 
 
 def error(msg: str) -> None:
-    err_console.print(f"[err]✖[/] {msg}")
+    err_console.print(f"[err][-][/] {msg}")
 
 
 def info(msg: str) -> None:
-    console.print(f"[muted]•[/] {msg}")
+    console.print(f"[muted]...[/] {msg}")
 
 
 def step(label: str, msg: str = "") -> None:
     """Print a step header, e.g. '[1/4] Reconnaissance'."""
-    text = f"[step]▸[/] [bold]{label}[/]"
+    text = f"[step]>>>[/] [bold]{label}[/]"
     if msg:
-        text += f"  [muted]←[/] [bright_white]{msg}[/]"
+        text += f"  [muted]<-[/] [white]{msg}[/]"
     console.print(text)
 
 
@@ -258,18 +255,14 @@ def progress_header(current: int, total: int, label: str = "") -> None:
 
 @contextmanager
 def spinner(label: str):
-    """Run a block with an animated spinner + live elapsed timer.
-
-    Indeterminate progress row: spinner, label, ticking clock — so a slow
-    stage (RPC resolve, repo scan, anvil fork boot) never looks frozen.
-    """
+    """Run a block with an animated spinner + live elapsed timer."""
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         TimeElapsedColumn(),
         console=console,
     )
-    progress.add_task(f"{label}…", total=None)
+    progress.add_task(f"{label}...", total=None)
     with progress:
         yield
 
@@ -289,14 +282,14 @@ def progress_bar(total: int, description: str = "Working"):
 
 
 def spinner_for(label: str, seconds: float = 1.2):
-    """Minimal blocking spinner — handy for demos & tests."""
+    """Minimal blocking spinner -- handy for demos & tests."""
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         TimeElapsedColumn(),
         console=console,
     )
-    progress.add_task(f"{label}…", total=None)
+    progress.add_task(f"{label}...", total=None)
     with progress:
         time.sleep(seconds)
 
@@ -310,9 +303,9 @@ def contracts_table(contracts: Dict[str, Dict[str, Any]], title: str = "Contract
     """Render the recon contract map."""
     table = Table(
         title=title,
-        box=box.ROUNDED,
-        border_style="cyan",
-        header_style="bold cyan",
+        box=box.SIMPLE_HEAVY,
+        border_style="green",
+        header_style="bold green",
         show_lines=False,
     )
     table.add_column("#", style="muted", justify="right")
@@ -323,12 +316,11 @@ def contracts_table(contracts: Dict[str, Dict[str, Any]], title: str = "Contract
 
     for i, (addr, info) in enumerate(contracts.items(), 1):
         name = info.get("name", "Unknown")
-        symbol = info.get("symbol") or "—"
+        symbol = info.get("symbol") or "---"
         code = info.get("code_size", 0)
         has_code = info.get("has_code", bool(code))
         status = info.get("status")
         if status is not None:
-            # github scanner supplies an explicit status string
             code_str = str(status)
             code_style = "ok" if ("bytes" in status or "deployed" in status.lower()) else "warn"
         else:
@@ -345,16 +337,11 @@ def contracts_table(contracts: Dict[str, Dict[str, Any]], title: str = "Contract
 
 
 def findings_table(findings: Sequence[Dict[str, Any]], title: str = "Findings") -> Table:
-    """Render analyzer / simulated findings with colored severity.
-
-    Source-level findings (file/line) get a Location column; address-level
-    findings fall back to the endpoint/address. Attack tag shows the chained
-    playbook route (e.g. 'mint', 'initialize') when present.
-    """
+    """Render analyzer / simulated findings with colored severity."""
     has_location = any(f.get("file") and f.get("line") for f in findings)
     table = Table(
         title=title,
-        box=box.ROUNDED,
+        box=box.SIMPLE_HEAVY,
         border_style="yellow",
         header_style="bold yellow",
     )
@@ -391,9 +378,9 @@ def templates_table(templates: Dict[str, Dict[str, Any]], title: str = "Attack T
     """Render the template library."""
     table = Table(
         title=title,
-        box=box.ROUNDED,
-        border_style="magenta",
-        header_style="bold magenta",
+        box=box.SIMPLE_HEAVY,
+        border_style="green",
+        header_style="bold green",
     )
     table.add_column("Template", style="bold white", no_wrap=True)
     table.add_column("Type", style="accent")
@@ -416,14 +403,14 @@ def attack_summary(result: Dict[str, Any], attack: str, target: str) -> Panel:
     if result.get("success"):
         profit = result.get("profit", "N/A")
         body = Group(
-            Text(f"ATTACK SUCCESSFUL — {attack.upper()}", style="success", justify="center"),
+            Text(f"EXPLOIT SUCCESSFUL // {attack.upper()}", style="success", justify="center"),
             Text(f"target: {target}", style="addr", justify="center"),
             Text(f"profit: {profit}", style="bold green", justify="center"),
         )
         return Panel(body, border_style="green", box=box.HEAVY)
     error_msg = result.get("error", "Unknown")
     body = Group(
-        Text(f"ATTACK FAILED — {attack.upper()}", style="fail", justify="center"),
+        Text(f"EXPLOIT FAILED // {attack.upper()}", style="fail", justify="center"),
         Text(f"target: {target}", style="addr", justify="center"),
         Text(f"reason: {error_msg}", style="muted", justify="center"),
     )
@@ -433,35 +420,25 @@ def attack_summary(result: Dict[str, Any], attack: str, target: str) -> Panel:
 def summary_panel(rows: Iterable[tuple[str, str]], title: str = "Summary") -> Panel:
     """Key/value summary panel (used for verdicts, scan stats)."""
     lines = [Text(f"{k}: ", style="bold white") + Text(v) for k, v in rows]
-    return Panel(Group(*lines), title=title, border_style="cyan", box=box.ROUNDED,
+    return Panel(Group(*lines), title=title, border_style="green", box=box.SIMPLE_HEAVY,
                  expand=False)
 
 
 # ---------------------------------------------------------------------------
-# The world-record visual toolkit 🤘
-# Gradient banners, threat-level kill screens, attack-surface gauges,
-# severity charts and fork-proof flow diagrams.
+# Visual toolkit -- threat levels, gauges, severity charts, attack flow
 # ---------------------------------------------------------------------------
 
-GRADIENT = ("bright_red", "bright_magenta", "bright_cyan", "bright_green",
-            "bright_yellow", "bright_cyan", "bright_magenta", "bright_red")
+GRADIENT = ("green", "yellow", "green", "yellow",
+            "green", "yellow", "green", "yellow")
 
 MEGA_BANNER = r"""
- ██████╗ ███████╗███████╗██╗      ██╗  ██╗██╗   ██╗███╗   ██╗████████╗███████╗██████╗
- ██╔══██╗██╔════╝██╔════╝██║      ██║  ██║██║   ██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗
- ██████╔╝█████╗  █████╗  ██║      ███████║██║   ██║██╔██╗ ██║   ██║   █████╗  ██████╔╝
- ██╔══██╗██╔══╝  ██╔══╝  ██║      ██╔══██║██║   ██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗
- ██║  ██║███████╗██║     ███████╗██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║
- ╚═╝  ╚═╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
-"""
+  ╔═╗╦ ╦╦═╗╔═╗╔╦╗╔═╗╔╦╗  ╔═╗╦ ╦╔═╗╔╗ ╔═╗╔═╗╦═╗╔╦╗
+  ╠═╣║ ║╠╦╝╠═╣ ║ ╠═╣ ║║  ║  ╠═╣║╣ ╠╩╗║╣ ║╣ ╠╦╝║║║
+  ╩ ╩╚═╝╩╚═╩ ╩ ╩ ╩ ╩═╩╝  ╚═╝╩ ╩╚═╝╚═╝╚═╝╚═╝╩╚═╩ ╩"""
 
 
 def mega_banner(version: str = "") -> None:
-    """Print the DEFI HUNTER mega-banner with a per-line color gradient.
-
-    The panel hugs the artwork (expand=False) so it never balloons across a
-    wide terminal — the tagline lives inside the box as a footer line.
-    """
+    """Print the DEFI HUNTER mega-banner with a per-line color gradient."""
     lines = MEGA_BANNER.strip("\n").splitlines()
     n = len(lines)
     body = Text()
@@ -469,14 +446,14 @@ def mega_banner(version: str = "") -> None:
         color = GRADIENT[int(i * len(GRADIENT) / max(n, 1))]
         body.append_text(Text(line.rstrip(), style=f"bold {color}", no_wrap=True))
         body.append_text(Text("\n"))
-    tag = Text("⚡ WORLD RECORD DeFi ATTACK TOOLKIT 🥵", style="bold yellow",
+    tag = Text(":: DEFi EXPLOIT TOOLKIT ::", style="bold yellow",
                justify="center")
     if version:
-        tag.append_text(Text(f"  ·  v{version}", style="muted"))
-    hook = Text("the only toolkit that fork-proves every HIGH finding "
-                "on a live mainnet clone", style="italic muted",
+        tag.append_text(Text(f"  // v{version}", style="muted"))
+    hook = Text("fork-proves every finding on a live mainnet clone",
+                style="italic muted",
                 justify="center")
-    console.print(Panel(Group(body, tag, hook), border_style="bright_red",
+    console.print(Panel(Group(body, tag, hook), border_style="green",
                         box=box.DOUBLE, expand=False, padding=(0, 1)))
     console.print()
 
@@ -485,13 +462,13 @@ def intro(version: str = "") -> None:
     """Full-screen animated boot intro (terminal only).
 
     Sequence:
-        1. RADAR — spinning target-acquisition sweep
-        2. REVEAL — the DEFI HUNTER block art draws line-by-line under a
+        1. RADAR -- spinning target-acquisition sweep
+        2. REVEAL -- the DEFI HUNTER block art draws line-by-line under a
            bright scanline while status messages cycle
-        3. HOLD — full artwork, then the boxed static banner with tagline
+        3. HOLD -- full artwork, then the boxed static banner with tagline
 
     Degrades to a plain static banner when stdout isn't a terminal
-    (pipes/tests/CI) or when DEFIHUNTER_NO_INTRO=1 is set — the wizard never
+    (pipes/tests/CI) or when DEFIHUNTER_NO_INTRO=1 is set -- the wizard never
     blocks on animation.
     """
     import os as _os
@@ -505,7 +482,7 @@ def intro(version: str = "") -> None:
 
     lines = MEGA_BANNER.strip("\n").splitlines()
     n = len(lines)
-    radar = ["◐", "◓", "◑", "◒"]
+    radar = ["[+]", "[.]", "[*]", "[.]"]
     statuses = ["ACQUIRING TARGET", "ANALYZING ATTACK SURFACE",
                 "ARMING FORK SIMULATOR", "HUNTING MODE: ENGAGED"]
     art_width = max(len(l.rstrip()) for l in lines)
@@ -520,9 +497,9 @@ def intro(version: str = "") -> None:
             else:
                 body.append_text(Text(line, style="dim", no_wrap=True))
             body.append_text(Text("\n"))
-        body.append_text(Text("▂" * art_width, style="bright_yellow", no_wrap=True))
+        body.append_text(Text("─" * art_width, style="yellow", no_wrap=True))
         body.append_text(Text("\n"))
-        body.append_text(Text(status, style="bold bright_red", justify="center"))
+        body.append_text(Text(status, style="bold green", justify="center"))
         return body
 
     t0 = _time.time()
@@ -532,9 +509,9 @@ def intro(version: str = "") -> None:
         while _time.time() - t0 < 0.9:
             frame = radar[int((_time.time() - t0) * 30) % len(radar)]
             live.update(Group(
-                Text(f"{frame}  TARGET ACQUISITION", style="bold bright_red",
+                Text(f"{frame}  TARGET ACQUISITION", style="bold green",
                      justify="center"),
-                Text("sweeping attack surface…", style="dim", justify="center"),
+                Text("sweeping attack surface...", style="dim", justify="center"),
             ))
             _time.sleep(1 / 30)
         # 2. line-by-line reveal (~0.13s/line)
@@ -556,7 +533,7 @@ def threat_level(findings: Sequence[Dict[str, Any]], analyzed: bool = True) -> s
     """Map findings to a threat level.
 
     Returns INCONCLUSIVE when there are no findings AND nothing was actually
-    analyzed — a security tool must never claim CLEAN on no data.
+    analyzed -- a security tool must never claim CLEAN on no data.
     """
     if not findings:
         return "CLEAN" if analyzed else "INCONCLUSIVE"
@@ -576,11 +553,11 @@ def threat_level(findings: Sequence[Dict[str, Any]], analyzed: bool = True) -> s
 
 def threat_banner(level: str, extra: str = "") -> Panel:
     """Big kill-screen style threat-level banner."""
-    glyph = {"CRITICAL": "☠️  ", "HIGH": "🔥 ", "MODERATE": "⚠️ ", "LOW": "🟡",
-             "CLEAN": "🛡️  ", "INCONCLUSIVE": "❓ "}.get(level, "❓")
+    glyph = {"CRITICAL": "[!]  ", "HIGH": "[!!] ", "MODERATE": "[!] ", "LOW": "[.] ",
+             "CLEAN": "[+]  ", "INCONCLUSIVE": "[?] "}.get(level, "[?] ")
     colors = {"CRITICAL": "red", "HIGH": "bright_red", "MODERATE": "yellow",
-              "LOW": "bright_yellow", "CLEAN": "green",
-              "INCONCLUSIVE": "bright_cyan"}
+              "LOW": "yellow", "CLEAN": "green",
+              "INCONCLUSIVE": "green"}
     style = colors.get(level, "white")
     header = Text(f"{glyph} THREAT LEVEL: {level}", style=f"bold white on {style}",
                   justify="center")
@@ -592,14 +569,14 @@ def threat_banner(level: str, extra: str = "") -> Panel:
 
 def attack_surface_gauge(findings: Sequence[Dict[str, Any]],
                          analyzed: bool = True) -> Panel:
-    """0–10 attack-surface meter, drawn with unicode blocks."""
+    """0-10 attack-surface meter, drawn with unicode blocks."""
     if not findings:
         if not analyzed:
-            body = Text("ATTACK SURFACE  ░░░░░░░░░░  N/A", style="bold bright_cyan")
-            sub = Text("no data — analysis skipped", style="bright_cyan",
+            body = Text("ATTACK SURFACE  ░░░░░░░░░░  N/A", style="bold green")
+            sub = Text("no data -- analysis skipped", style="green",
                        justify="center")
             return Panel(Group(body, sub), title="EXPOSURE METER",
-                         border_style="bright_cyan", box=box.ROUNDED, expand=False)
+                         border_style="green", box=box.SIMPLE_HEAVY, expand=False)
         score, label = 0.0, "CLEAN"
     else:
         weight = sum({"CRITICAL": 10, "HIGH": 7, "MEDIUM": 4, "LOW": 2,
@@ -607,14 +584,14 @@ def attack_surface_gauge(findings: Sequence[Dict[str, Any]],
                      for f in findings)
         score = min(10.0, round(weight / 2.5, 1))
         label = threat_level(findings)
-    color = {"CRITICAL": "red", "HIGH": "bright_red", "MODERATE": "yellow",
-             "LOW": "bright_yellow", "CLEAN": "green"}.get(label, "white")
+    color = {"CRITICAL": "red", "HIGH": "red", "MODERATE": "yellow",
+             "LOW": "yellow", "CLEAN": "green"}.get(label, "white")
     filled = int(score)
     bar = "█" * filled + "░" * (10 - filled)
     body = Text(f"ATTACK SURFACE  {bar}  {score:.1f}/10", style=f"bold {color}")
     sub = Text(f"threat: {label}", style=f"{color}", justify="center")
     return Panel(Group(body, sub), title="EXPOSURE METER", border_style=color,
-                 box=box.ROUNDED, expand=False)
+                 box=box.SIMPLE_HEAVY, expand=False)
 
 
 def severity_chart(findings: Sequence[Dict[str, Any]],
@@ -633,42 +610,42 @@ def severity_chart(findings: Sequence[Dict[str, Any]],
         if c == 0:
             continue
         bar_len = max(1, int(c * width / max_c))
-        color = {"CRITICAL": "red", "HIGH": "bright_red", "MEDIUM": "yellow",
-                 "LOW": "cyan", "INFO": "dim"}.get(sev, "white")
+        color = {"CRITICAL": "red", "HIGH": "red", "MEDIUM": "yellow",
+                 "LOW": "green", "INFO": "dim"}.get(sev, "white")
         lines.append(Text(f"{sev:<9} ", style="bold white") +
                      Text("█" * bar_len, style=color) +
                      Text(f" {c} ({c*100//total}%)", style="muted"))
     if not lines:
         if not analyzed:
-            lines.append(Text("no data — analysis skipped", style="bright_cyan"))
+            lines.append(Text("no data -- analysis skipped", style="green"))
         else:
-            lines.append(Text("no findings — clean repo", style="green"))
-    return Panel(Group(*lines), title="FINDINGS BY SEVERITY", border_style="cyan",
-                 box=box.ROUNDED, expand=False)
+            lines.append(Text("no findings -- clean repo", style="green"))
+    return Panel(Group(*lines), title="FINDINGS BY SEVERITY", border_style="green",
+                 box=box.SIMPLE_HEAVY, expand=False)
 
 
 def attack_flow(findings: Sequence[Dict[str, Any]],
                 fork_results: Sequence[Dict[str, Any]] = ()) -> Panel:
-    """Visual chain: FINDING → ROUTE → FORK STATUS.
+    """Visual chain: FINDING -> ROUTE -> FORK STATUS.
 
-    ✅ EXPLOITABLE   — fork-proven callable by an arbitrary account
-    ⚠️ POSSIBLE      — static hit, not (or not yet) fork-proven
-    ⚪ NOT VERIFIED  — source hint with no direct exploit route
+    [+] EXPLOITABLE   -- fork-proven callable by an arbitrary account
+    [~] POSSIBLE      -- static hit, not (or not yet) fork-proven
+    [-] NOT VERIFIED  -- source hint with no direct exploit route
     """
     status_by_fileline: Dict[tuple, str] = {}
     for r in fork_results:
         sf = r.get("source_finding") or {}
         key = (sf.get("file"), sf.get("line"))
         if r.get("success"):
-            status_by_fileline[key] = "✅ EXPLOITABLE"
+            status_by_fileline[key] = "[+] EXPLOITABLE"
         else:
-            status_by_fileline.setdefault(key, "⚠️ POSSIBLE")
+            status_by_fileline.setdefault(key, "[~] POSSIBLE")
     for f in findings:
         key = (f.get("file"), f.get("line"))
         if key not in status_by_fileline:
-            status_by_fileline[key] = "⚠️ POSSIBLE" if f.get("attack") else "⚪ NOT VERIFIED"
+            status_by_fileline[key] = "[~] POSSIBLE" if f.get("attack") else "[-] NOT VERIFIED"
 
-    table = Table(box=box.ROUNDED, border_style="magenta", header_style="bold magenta",
+    table = Table(box=box.SIMPLE_HEAVY, border_style="green", header_style="bold green",
                   expand=True, show_edge=True)
     table.add_column("FINDING", style="bold white", max_width=46, overflow="fold")
     table.add_column("ROUTE", style="accent", justify="center")
@@ -679,7 +656,7 @@ def attack_flow(findings: Sequence[Dict[str, Any]],
         loc = f"{f.get('file')}:{f.get('line')}" if f.get("file") else "-"
         route = str(f.get("attack") or "-")
         status = status_by_fileline.get((f.get("file"), f.get("line")),
-                                        "⚪ NOT VERIFIED")
+                                        "[-] NOT VERIFIED")
         status_style = ("success" if "EXPLOITABLE" in status else
                         "warn" if "POSSIBLE" in status else "muted")
         cell = Text()
@@ -691,13 +668,13 @@ def attack_flow(findings: Sequence[Dict[str, Any]],
             Text(route, style="accent"),
             Text(status, style=status_style),
         )
-    return Panel(table, title="ATTACK FLOW", border_style="magenta", box=box.DOUBLE,
+    return Panel(table, title="ATTACK FLOW", border_style="green", box=box.DOUBLE,
                  expand=False)
 
 
 def ui_summary_table(rows: Iterable[tuple[str, str]], title: str = "Summary") -> Table:
     """Key/value summary as a table (denser than the panel)."""
-    table = Table(box=box.ROUNDED, border_style="cyan", header_style="bold cyan",
+    table = Table(box=box.SIMPLE_HEAVY, border_style="green", header_style="bold green",
                   show_header=False, title=title, title_style="bold white")
     table.add_column("key", style="bold white", justify="right", no_wrap=True)
     table.add_column("value", style="white")
@@ -709,5 +686,5 @@ def ui_summary_table(rows: Iterable[tuple[str, str]], title: str = "Summary") ->
 def hunt_complete(rows: Iterable[tuple[str, str]], level: str = "LOW") -> None:
     """Final kill-screen: verdict header + key/value stats."""
     console.print()
-    console.print(threat_banner(level, extra="TARGET ASSESSED · REPORT READY"))
-    console.print(ui_summary_table(rows, title="HUNT COMPLETE 🏆"))
+    console.print(threat_banner(level, extra="TARGET ASSESSED // REPORT READY"))
+    console.print(ui_summary_table(rows, title="HUNT COMPLETE"))

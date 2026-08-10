@@ -492,7 +492,7 @@ class TestVisualToolkit:
         from defihunter.ui import mega_banner
         mega_banner("9.9.9")
         out = capsys.readouterr().out
-        assert "WORLD RECORD" in out and "fork-proves" in out
+        assert "EXPLOIT TOOLKIT" in out and "fork-proves" in out
         assert "9.9.9" in out
 
 
@@ -555,7 +555,7 @@ class TestIntro:
         monkeypatch.setattr(ui, "console", console)
         ui.intro("1.2.3")
         out = f.getvalue()
-        assert "WORLD RECORD" in out and "fork-proves" in out
+        assert "EXPLOIT TOOLKIT" in out and "fork-proves" in out
         assert "1.2.3" in out
 
     def test_static_when_env_skip(self, monkeypatch):
@@ -564,7 +564,7 @@ class TestIntro:
         monkeypatch.setenv("DEFIHUNTER_NO_INTRO", "1")
         ui.intro("4.5.6")
         out = f.getvalue()
-        assert "WORLD RECORD" in out and "fork-proves" in out
+        assert "EXPLOIT TOOLKIT" in out and "fork-proves" in out
         assert "4.5.6" in out
 
     def test_animation_runs_to_completion(self, monkeypatch):
@@ -589,7 +589,7 @@ class TestIntro:
 
         ui.intro("7.8.9")
         out = f.getvalue()
-        assert "WORLD RECORD" in out and "fork-proves" in out
+        assert "EXPLOIT TOOLKIT" in out and "fork-proves" in out
         assert "7.8.9" in out
 
 
