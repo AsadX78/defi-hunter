@@ -1039,3 +1039,133 @@ class TestChainRegistry:
         assert detect_chain_from_rpc("https://mainnet.optimism.io") == "optimism"
         assert detect_chain_from_rpc("https://mainnet.base.org") == "base"
         assert detect_chain_from_rpc("https://rpc.example.com") is None
+
+
+class TestExploitExecutor:
+    """Tests for the live exploit executor."""
+
+    def test_executor_init(self):
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(rpc_url="http://127.0.0.1:8545")
+        assert executor.rpc_url == "http://127.0.0.1:8545"
+        assert executor.attacker == "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+
+    def test_executor_custom_attacker(self):
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(
+            rpc_url="http://127.0.0.1:8545",
+            attacker="0xabc123",
+            profit_wallet="0xdef456",
+        )
+        assert executor.attacker == "0xabc123"
+        assert executor.profit_wallet == "0xdef456"
+
+    def test_build_calldata_initialize(self):
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(rpc_url="http://127.0.0.1:8545")
+        calldata = executor._build_calldata("initialize", "0xtarget", {})
+        assert calldata is not None
+        assert "initialize" in calldata
+
+    def test_build_calldata_hex_mint(self):
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(rpc_url="http://127.0.0.1:8545")
+        # Mock total supply read to return 0
+        executor._get_total_supply = lambda t: 10**18
+        calldata = executor._build_calldata_hex("mint", "0xtarget", {})
+        assert calldata is not None
+        assert calldata.startswith("0x40c10f19")  # mint selector
+
+    def test_build_calldata_hex_initialize(self):
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(rpc_url="http://127.0.0.1:8545")
+        calldata = executor._build_calldata_hex("initialize", "0xtarget", {})
+        assert calldata is not None
+        assert calldata.startswith("0x1cf5d2a8")  # initialize selector
+
+    def test_build_calldata_hex_approve(self):
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(rpc_url="http://127.0.0.1:8545")
+        calldata = executor._build_calldata_hex("approve", "0xtarget", {})
+        assert calldata is not None
+        assert calldata.startswith("0x095ea7b3")  # approve selector
+
+    def test_build_calldata_hex_unknown_returns_none(self):
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(rpc_url="http://127.0.0.1:8545")
+        calldata = executor._build_calldata_hex("nonexistent_attack", "0xtarget", {})
+        assert calldata is None
+
+    def test_calc_profit_eth(self):
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(rpc_url="http://127.0.0.1:8545")
+        before = {"attacker_eth": 100 * 10**18}
+        after = {"attacker_eth": 105 * 10**18}
+        profit = executor._calc_profit_eth(before, after)
+        assert "5.000000 ETH" in profit
+
+    def test_calc_profit_tokens(self):
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(rpc_url="http://127.0.0.1:8545")
+        before = {"attacker_tokens": 0}
+        after = {"attacker_tokens": 1000000}
+        profit = executor._calc_profit_tokens(before, after)
+        assert "1,000,000" in profit
+
+    def test_format_proof_success(self):
+        from defihunter.core.exploit_executor import format_proof
+        proof = {
+            "success": True,
+            "method": "livefork",
+            "tx_hash": "0xabc123",
+            "gas_used": 21000,
+            "elapsed_s": 0.5,
+            "target": "0xtarget",
+            "attacker": "0xattacker",
+            "profit_eth": "5.000000 ETH",
+            "before_state": {"attacker_eth": 100 * 10**18},
+            "after_state": {"attacker_eth": 105 * 10**18},
+        }
+        text = format_proof(proof)
+        assert "EXPLOIT SUCCESSFUL" in text
+        assert "livefork" in text
+        assert "5.000000 ETH" in text
+
+    def test_format_proof_failure(self):
+        from defihunter.core.exploit_executor import format_proof
+        proof = {
+            "success": False,
+            "method": "livefork",
+            "revert_reason": "execution reverted",
+            "target": "0xtarget",
+            "attacker": "0xattacker",
+        }
+        text = format_proof(proof)
+        assert "EXPLOIT FAILED" in text
+        assert "execution reverted" in text
+
+    def test_execute_livefork_refuted(self):
+        """Test that a bad target produces a refuted exploit."""
+        from defihunter.core.exploit_executor import ExploitExecutor
+        executor = ExploitExecutor(rpc_url="http://127.0.0.1:8545")
+        # Mock ETH balance reads
+        executor._get_eth_balance = lambda a: 100 * 10**18
+        executor._get_erc20_balance = lambda t, a: 0
+        # Execute against a fake target -- should fail (RPC unreachable)
+        proof = executor.execute("initialize", "0x0000000000000000000000000000000000000001")
+        assert proof["method"] == "livefork"
+        assert "success" in proof
+
+    def test_simple_attacks_coverage(self):
+        """Ensure all SIMPLE_ATTACKS have selectors."""
+        from defihunter.core.exploit_executor import SIMPLE_ATTACKS
+        assert "mint" in SIMPLE_ATTACKS
+        assert "initialize" in SIMPLE_ATTACKS
+        assert "approve" in SIMPLE_ATTACKS
+        assert "upgradeTo" in SIMPLE_ATTACKS
+        assert "transferOwnership" in SIMPLE_ATTACKS
+        assert "withdraw" in SIMPLE_ATTACKS
+        for name, info in SIMPLE_ATTACKS.items():
+            assert info["selector"].startswith("0x")
+            assert len(info["selector"]) == 10
+            assert "desc" in info

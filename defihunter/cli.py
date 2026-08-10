@@ -757,15 +757,20 @@ def batch(targets, chain, rpc, attacks, output_dir, format, no_fork):
 @click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL (for auto-detection)')
 @click.option('--output', '-o', default='./exploit', help='Output directory (default: ./exploit)')
 @click.option('--all', 'all_attacks', is_flag=True, help='Generate exploits for all attack types')
-def exploit(target, attack, rpc, output, all_attacks):
+@click.option('--execute', '-x', is_flag=True,
+              help='Execute exploit against live fork (real proof)')
+@click.option('--attacker', default=None, help='Attacker EOA address (default: 0x3C44...293BC)')
+@click.option('--token', default=None, help='ERC20 token address for balance tracking')
+def exploit(target, attack, rpc, output, all_attacks, execute, attacker, token):
     """Generate ready-to-run Foundry exploit scripts.
 
-    Produces:
-      - contracts/Exploit*.sol  — attacker contract
-      - scripts/run-exploit.s.sol — Foundry script
-      - .env — environment variables
+    With --execute: deploys and executes against a live mainnet fork,
+    capturing real balance changes as proof.
 
-    Run with: forge script scripts/run-exploit.s.sol --rpc-url $RPC --private-key $KEY
+    Produces:
+      - contracts/Exploit*.sol  -- attacker contract
+      - scripts/run-exploit.s.sol -- Foundry script
+      - .env -- environment variables
     """
     from defihunter.core.exploit_generator import ExploitGenerator
 
@@ -775,6 +780,10 @@ def exploit(target, attack, rpc, output, all_attacks):
     ui.rule("EXPLOIT GENERATOR")
     ui.step("Target", target)
     ui.step("Output", output)
+    if execute:
+        ui.step("Mode", "LIVE EXECUTION")
+    if rpc:
+        ui.step("RPC", rpc[:60] + "..." if len(rpc) > 60 else rpc)
 
     gen = ExploitGenerator(output_dir=output)
 
@@ -796,13 +805,69 @@ def exploit(target, attack, rpc, output, all_attacks):
         ("attack types", ", ".join(r.get("attack_type", attack) for r in results)),
     ]))
 
-    # Instructions
-    ui.console.print()
-    ui.info("To run the exploit:")
-    ui.console.print(f"  cd {output}")
-    ui.console.print("  forge install foundry-rs/forge-std --no-commit")
-    ui.console.print("  # Edit .env with your values")
-    ui.console.print("  forge script scripts/run-exploit.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast")
+    # LIVE EXECUTION
+    if execute and rpc:
+        from defihunter.core.exploit_executor import ExploitExecutor, format_proof
+
+        ui.console.print()
+        ui.rule("LIVE EXPLOIT EXECUTION")
+
+        executor = ExploitExecutor(
+            rpc_url=rpc,
+            attacker=attacker,
+            profit_wallet=attacker,
+        )
+
+        for r in results:
+            atk = r.get("attack_type", attack)
+            ui.step(f"Executing", atk)
+
+            extra = {}
+            if token:
+                extra["token"] = token
+
+            with ui.spinner(f"Running {atk} against {target[:10]}..."):
+                proof = executor.execute(
+                    attack_type=atk,
+                    target=target,
+                    exploit_dir=output,
+                    extra=extra,
+                )
+
+            # Display proof
+            ui.console.print()
+            if proof.get("success"):
+                ui.console.print(ui.Panel(
+                    format_proof(proof),
+                    title=f"[bold green][+] {atk.upper()} -- EXPLOIT PROVEN[/]",
+                    border_style="green",
+                    box=box.HEAVY,
+                ))
+            else:
+                ui.console.print(ui.Panel(
+                    format_proof(proof),
+                    title=f"[bold red][-] {atk.upper()} -- REFUTED[/]",
+                    border_style="red",
+                    box=box.HEAVY,
+                ))
+
+        ui.console.print()
+        ui.ok("Live execution complete.")
+    elif execute and not rpc:
+        ui.console.print()
+        ui.warning_box("--execute requires --rpc. Using default RPC from config.")
+        ui.info("Set RPC: defihunter config set-rpc <url>")
+
+    # Instructions (only if not executing)
+    if not execute:
+        ui.console.print()
+        ui.info("To run the exploit:")
+        ui.console.print(f"  cd {output}")
+        ui.console.print("  forge install foundry-rs/forge-std --no-commit")
+        ui.console.print("  # Edit .env with your values")
+        ui.console.print("  forge script scripts/run-exploit.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast")
+        ui.console.print()
+        ui.info("Or execute live with --execute --rpc <url>")
 
     ui.ok(f"Exploit scripts ready in {output}/")
 

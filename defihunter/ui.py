@@ -424,6 +424,71 @@ def summary_panel(rows: Iterable[tuple[str, str]], title: str = "Summary") -> Pa
                  expand=False)
 
 
+def exploit_proof_panel(proof: Dict[str, Any]) -> Panel:
+    """Display live exploit execution proof with balance changes."""
+    success = proof.get("success", False)
+    method = proof.get("method", "unknown")
+    target = proof.get("target", "N/A")
+    attacker = proof.get("attacker", "N/A")
+
+    lines = []
+
+    # Status line
+    if success:
+        lines.append(Text("[+] EXPLOIT SUCCESSFUL", style="bold green", justify="center"))
+    else:
+        lines.append(Text("[-] EXPLOIT REFUTED", style="bold red", justify="center"))
+
+    lines.append(Text(f"method: {method}", style="muted", justify="center"))
+    lines.append(Text(f"target: {target}", style="addr", justify="center"))
+    lines.append(Text(f"attacker: {attacker}", style="addr", justify="center"))
+
+    # TX hash
+    tx = proof.get("tx_hash", "N/A")
+    if tx:
+        lines.append(Text(f"tx: {tx}", style="green" if success else "muted", justify="center"))
+
+    # Gas
+    gas = proof.get("gas_used", "N/A")
+    lines.append(Text(f"gas: {gas}", style="muted", justify="center"))
+
+    # Profit
+    profit_eth = proof.get("profit_eth", "N/A")
+    if profit_eth and profit_eth != "N/A":
+        lines.append(Text(f"profit: {profit_eth}", style="bold green", justify="center"))
+    profit_tok = proof.get("profit_tokens", "N/A")
+    if profit_tok and profit_tok != "N/A":
+        lines.append(Text(f"tokens: {profit_tok}", style="bold green", justify="center"))
+
+    # State change
+    before = proof.get("before_state", {})
+    after = proof.get("after_state", {})
+    if before and after:
+        b_eth = before.get("attacker_eth", 0)
+        a_eth = after.get("attacker_eth", 0)
+        lines.append(Text(
+            f"ETH: {b_eth / 1e18:.6f} -> {a_eth / 1e18:.6f}",
+            style="addr", justify="center",
+        ))
+        if "attacker_tokens" in before:
+            b_tok = before.get("attacker_tokens", 0)
+            a_tok = after.get("attacker_tokens", 0)
+            lines.append(Text(
+                f"tokens: {b_tok:,} -> {a_tok:,}",
+                style="addr", justify="center",
+            ))
+
+    # Revert reason
+    revert = proof.get("revert_reason")
+    if revert:
+        lines.append(Text(f"revert: {revert[:200]}", style="red", justify="center"))
+
+    border = "green" if success else "red"
+    title_style = "bold green" if success else "bold red"
+    title = f"[{title_style}]{'[+] PROVEN' if success else '[-] REFUTED'}[/] // {proof.get('attack', 'exploit').upper()}"
+    return Panel(Group(*lines), title=title, border_style=border, box=box.HEAVY)
+
+
 # ---------------------------------------------------------------------------
 # Visual toolkit -- threat levels, gauges, severity charts, attack flow
 # ---------------------------------------------------------------------------
