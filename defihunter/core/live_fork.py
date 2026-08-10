@@ -103,44 +103,62 @@ class LiveFork:
     # Core JSON-RPC transport
     # ------------------------------------------------------------------
 
-    def _rpc(self, method: str, params: list) -> Any:
-        """Single JSON-RPC call via curl (zero Python dependencies)."""
+    def _rpc(self, method: str, params: list, retries: int = 3) -> Any:
+        """Single JSON-RPC call via curl with retry logic."""
         payload = json.dumps({
             "jsonrpc": "2.0",
             "id": 1,
             "method": method,
             "params": params,
         })
-        proc = subprocess.run(
-            ["curl", "-s", "-X", "POST",
-             "-H", "Content-Type: application/json",
-             "-d", payload,
-             self.rpc_url],
-            capture_output=True, text=True, timeout=30)
-        if proc.returncode != 0:
-            raise RuntimeError(f"curl failed: {proc.stderr[:200]}")
-        data = json.loads(proc.stdout)
-        if "error" in data:
-            raise RuntimeError(f"RPC error: {data['error']}")
-        return data["result"]
+        last_error = None
+        for attempt in range(retries):
+            try:
+                proc = subprocess.run(
+                    ["curl", "-s", "-X", "POST",
+                     "-H", "Content-Type: application/json",
+                     "-d", payload,
+                     self.rpc_url],
+                    capture_output=True, text=True, timeout=60)
+                if proc.returncode != 0:
+                    raise RuntimeError(f"curl failed: {proc.stderr[:200]}")
+                data = json.loads(proc.stdout)
+                if "error" in data:
+                    raise RuntimeError(f"RPC error: {data['error']}")
+                return data["result"]
+            except (subprocess.TimeoutExpired, json.JSONDecodeError, RuntimeError) as e:
+                last_error = e
+                if attempt < retries - 1:
+                    time.sleep(2 * (attempt + 1))  # exponential backoff
+                    continue
+                raise RuntimeError(f"RPC call failed after {retries} attempts: {last_error}")
 
-    def _rpc_batch(self, calls: list) -> list:
-        """Batch multiple JSON-RPC calls in one HTTP request."""
+    def _rpc_batch(self, calls: list, retries: int = 3) -> list:
+        """Batch multiple JSON-RPC calls in one HTTP request with retry."""
         batch = [{"jsonrpc": "2.0", "id": i + 1, "method": m, "params": p}
                  for i, (m, p) in enumerate(calls)]
         payload = json.dumps(batch)
-        proc = subprocess.run(
-            ["curl", "-s", "-X", "POST",
-             "-H", "Content-Type: application/json",
-             "-d", payload,
-             self.rpc_url],
-            capture_output=True, text=True, timeout=30)
-        if proc.returncode != 0:
-            raise RuntimeError(f"curl batch failed: {proc.stderr[:200]}")
-        data = json.loads(proc.stdout)
-        # Sort by id to match request order
-        results = sorted(data, key=lambda x: x.get("id", 0))
-        return [r.get("result") for r in results]
+        last_error = None
+        for attempt in range(retries):
+            try:
+                proc = subprocess.run(
+                    ["curl", "-s", "-X", "POST",
+                     "-H", "Content-Type: application/json",
+                     "-d", payload,
+                     self.rpc_url],
+                    capture_output=True, text=True, timeout=60)
+                if proc.returncode != 0:
+                    raise RuntimeError(f"curl batch failed: {proc.stderr[:200]}")
+                data = json.loads(proc.stdout)
+                # Sort by id to match request order
+                results = sorted(data, key=lambda x: x.get("id", 0))
+                return [r.get("result") for r in results]
+            except (subprocess.TimeoutExpired, json.JSONDecodeError, RuntimeError) as e:
+                last_error = e
+                if attempt < retries - 1:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"Batch RPC failed after {retries} attempts: {last_error}")
 
     # ------------------------------------------------------------------
     # State reads (live chain, no override)
