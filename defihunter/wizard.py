@@ -69,6 +69,20 @@ def identity_match(expected: str, name: Optional[str], symbol: Optional[str]) ->
 # ---------------------------------------------------------------------------
 
 
+def _looks_like_website(answer: str) -> bool:
+    """True if the input looks like a website URL (not GitHub/GitLab)."""
+    lower = answer.lower().strip()
+    if lower.startswith(("http://", "https://")):
+        # It's a URL — check if it's GitHub/GitLab (already handled by looks_like_git_url)
+        if "github.com" in lower or "gitlab.com" in lower:
+            return False
+        return True
+    # Bare domain like "ammalgam.xyz" or "app.aave.com"
+    if "." in lower and not lower.startswith("0x") and "/" not in lower:
+        return True
+    return False
+
+
 def ask_repo_url() -> str:
     """Q1: GitHub repo, local folder, or raw 0x addresses (no GitHub needed)."""
     ui.console.print()
@@ -95,6 +109,15 @@ def ask_repo_url() -> str:
             return answer
         if answer.lower().startswith("llama:"):
             return answer  # explicit protocol-name request (don't re-prefix)
+        # Detect website URLs (http/https that aren't GitHub/GitLab)
+        if _looks_like_website(answer):
+            if Confirm.ask(
+                f"[warn]Looks like a website URL — scrape it for contract addresses?[/]",
+                default=True,
+            ):
+                return f"scrape:{answer}"
+            if Confirm.ask("[warn]Continue anyway?[/]", default=False):
+                return answer
         if Confirm.ask(
             f"[warn]Not a repo/folder/addresses — look up '{answer}' as a "
             "protocol name on DefiLlama?[/]",
@@ -593,6 +616,71 @@ def _pick_org_repo(org: str) -> Optional[str]:
         ui.warn("Enter a number from the list or 'skip'.")
 
 
+def _scrape_website(website_url: str, rpc: Optional[str]) -> Dict:
+    """Scrape a website URL for 0x contract addresses, then verify them on-chain."""
+    import re as _re
+    from defihunter.core import github
+
+    # Normalize URL
+    url = website_url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    ui.info(f"Scraping {url} for contract addresses...")
+
+    # Scrape HTML for 0x addresses
+    try:
+        import subprocess as _sp
+        proc = _sp.run(
+            ["curl", "-sL", url, "--connect-timeout", "10", "--max-time", "30"],
+            capture_output=True, text=True, timeout=35,
+        )
+        html = proc.stdout
+    except Exception:
+        html = ""
+
+    if not html:
+        raise RuntimeError(
+            f"Could not fetch {url} — site may be down or blocking requests."
+        )
+
+    # Extract all 0x addresses from HTML
+    addrs = set(_re.findall(r"0x[a-fA-F0-9]{40}", html))
+
+    # Also scrape linked JS files for addresses
+    js_files = _re.findall(r'(?:src|href)="([^"]*\.js)"', html)
+    for js in js_files[:10]:
+        if js.startswith("/"):
+            js_url = f"{url.rstrip('/')}{js}"
+        elif js.startswith("http"):
+            js_url = js
+        else:
+            continue
+        try:
+            proc = _sp.run(
+                ["curl", "-sL", js_url, "--connect-timeout", "10", "--max-time", "15"],
+                capture_output=True, text=True, timeout=20,
+            )
+            addrs.update(_re.findall(r"0x[a-fA-F0-9]{40}", proc.stdout))
+        except Exception:
+            continue
+
+    if not addrs:
+        raise RuntimeError(
+            f"No 0x contract addresses found on {url}. "
+            "Try pasting addresses directly from a block explorer."
+        )
+
+    ui.info(f"Found {len(addrs)} candidate address(es) on {url}")
+
+    # Scan and verify on-chain
+    addr_str = ", ".join(sorted(addrs))
+    scan = github.scan_addresses(addr_str, rpc_url=rpc)
+    scan["repo_url"] = f"Website: {url}"
+
+    return scan
+
+
 def _scan_llama_protocol(source: str, rpc: Optional[str]) -> Dict:
     """Resolve 'llama:<name>' via DefiLlama, scan the anchor addresses, and
     optionally go deeper by scanning a repo from the protocol's GitHub org."""
@@ -714,6 +802,9 @@ def run_wizard(
     try:
         if repo_url.startswith("llama:"):
             scan = _scan_llama_protocol(repo_url, rpc)
+        elif repo_url.startswith("scrape:"):
+            website_url = repo_url[len("scrape:"):]
+            scan = _scrape_website(website_url, rpc)
         elif github.is_address_list(repo_url):
             with ui.spinner(f"Scanning {repo_url}"):
                 scan = github.scan_addresses(repo_url, rpc_url=rpc)
