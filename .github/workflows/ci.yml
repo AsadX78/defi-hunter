@@ -5,6 +5,7 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -31,7 +32,7 @@ jobs:
         flake8 defihunter --count --select=E9,F63,F7,F82 --show-source --statistics
 
     - name: Run tests
-      run: pytest tests/ -q --tb=short
+      run: pytest tests/ -q --tb=long -rA
 
   foundry:
     runs-on: ubuntu-latest
