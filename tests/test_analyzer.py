@@ -297,6 +297,8 @@ class TestForkSimulator:
         fork = self._ready_fork(monkeypatch, "0x1111")
         calls, send = self._fake_send()  # nothing mines
         monkeypatch.setattr(fork, "_send", send)
+        # balance reads must fail closed (no anvil/cast in this harness)
+        monkeypatch.setattr(fork, "_balance", lambda addr: "")
         res = fork.run("reentrancy", "0x1111")
         assert not res["success"]
         assert "No permissionless payout sink" in res["evidence"]

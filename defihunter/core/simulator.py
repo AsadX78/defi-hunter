@@ -572,10 +572,18 @@ class ForkSimulator:
         return bool(out and out not in ("0x", "0x0"))
 
     def _balance(self, addr: str) -> str:
-        """Raw wei ETH balance of an address on the fork (eth_getBalance)."""
-        proc = subprocess.run(
-            ["cast", "balance", addr, "--rpc-url", self.rpc_url_local],
-            capture_output=True, text=True, timeout=30)
+        """Raw wei ETH balance of an address on the fork (eth_getBalance).
+
+        Missing cast (foundry not installed) must fail CLOSED: return "" so
+        _to_int → None → callers treat the read as unavailable instead of
+        crashing with FileNotFoundError mid-battery.
+        """
+        try:
+            proc = subprocess.run(
+                ["cast", "balance", addr, "--rpc-url", self.rpc_url_local],
+                capture_output=True, text=True, timeout=30)
+        except FileNotFoundError:
+            return ""
         return proc.stdout.strip() or proc.stderr.strip()
 
     @staticmethod
