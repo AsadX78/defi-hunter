@@ -31,11 +31,12 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.simulator import AttackSimulator, ForkSimulator
 
 ALL_ATTACKS = [
-    "inflation", "admin", "governance", "oracle", "reentrancy", "bridge",
-    "sandwich", "twap", "flashloan", "withdraw", "initialize", "permit",
-    "liquidation", "forcesend", "peg", "crossfunc", "delegatecall", "mint",
+    "mint", "initialize", "delegatecall", "reentrancy", "arbitrarycall",
+    "approve", "selfdestruct", "oracle", "flashloan", "governance",
+    "bridge", "twap", "crossfunc", "permit", "liquidation", "forcesend",
+    "peg", "sandwich", "frontrun", "mev",
 ]
-RECOMMENDED_ATTACKS = ["initialize", "admin", "mint", "inflation", "withdraw", "permit"]
+RECOMMENDED_ATTACKS = ["mint", "initialize", "reentrancy", "permit", "flashloan"]
 
 
 def _norm_identity(value: Optional[str]) -> str:
@@ -164,7 +165,7 @@ def ask_attacks() -> List[str]:
         rows.append(f"  [{i:>2}] {name:<14} {mark}")
     menu = "\n".join("".join(rows[i:i + 3]) for i in range(0, len(rows), 3))
     ui.console.print(ui.summary_panel(
-        [("* = recommended set", "initialize, admin, mint, inflation, withdraw, permit")],
+        [("* = recommended set", "mint, initialize, reentrancy, permit, flashloan")],
         title="Attack Menu (comma-separated numbers, or 'all')",
     ))
     ui.console.print(menu)
