@@ -432,6 +432,12 @@ class ForkSimulator:
         "liquidation": ["liquidate", "liquidationCall", "seize"],
         "forcesend": ["totalAssets", "convertToShares", "convertToAssets"],
         "peg": ["openVault", "swapCollateral", "mintDai", "redeem"],
+        "sandwich": ["swap", "swapExactTokensForTokens", "swapTokensForExactTokens",
+                     "swapExactETHForTokens", "swapETHForExactTokens",
+                     "swapExactTokensForETH", "swapTokensForExactETH"],
+        "frontrun": ["liquidate", "liquidationCall", "auction", "bid",
+                     "withdraw", "claim", "compound", "deposit"],
+        "mev": ["swap", "liquidate", "liquidationCall", "auction", "bid"],
     }
     MAX_UINT = ("11579208923731619542357098500868790785326998466564056403"
                 "9457584007913129639935")
@@ -1646,6 +1652,183 @@ class ForkSimulator:
                     "steps": steps,
                     "evidence": ("No peg attack surface found "
                                  "(no vault + collateral swap functions)."),
+                    "source_finding": source_finding}
+
+        if attack == "sandwich":
+            # Sandwich MEV: detect if the contract's swap/AMM function is
+            # vulnerable to sandwich attacks (no slippage protection, no
+            # deadline, no frontrunning guard). The attacker front-runs
+            # a victim's swap, then back-runs to extract value.
+            code = self._code_hex()
+
+            # UniswapV2/V3 swap selectors
+            swap_selectors = [
+                "0x022c0d9f",  # swap(uint256,uint256,address,bytes) — UniV2
+                "0x128acb08",  # swap(uint256,uint256,address,bytes) — UniV3
+                "0x38ed1739",  # swapExactTokensForTokens
+                "0x8803dbee",  # swapTokensForExactTokens
+                "0x7ff36ab5",  # swapExactETHForTokens
+                "0xfb3bdb41",  # swapETHForExactTokens
+                "0x18cbafe5",  # swapExactTokensForETH
+                "0x7a56c64c",  # swapTokensForExactETH
+            ]
+            has_swap = any(m in code for m in swap_selectors)
+
+            # Slippage protection: check for amountOutMin / amountOut minimum
+            # Uniswap uses this pattern in the calldata
+            slippage_markers = [
+                "amountOutMin",   # common in UniV2-style
+                "slippage",       # DEX aggregator slippage param
+                "minOut",         # min output amount
+                "minimumOut",     # minimum output
+            ]
+            # Check if the swap function takes a deadline parameter
+            deadline_markers = [
+                "deadline",       # UniV2/V3 deadline param
+                "block.timestamp", # deadline check
+            ]
+
+            steps.append({"step": "swap/AMM function",
+                          "value": "detected" if has_swap else "not found"})
+
+            if has_swap:
+                # Check if the contract itself has slippage protection
+                # (the contract's own swaps, not the DEX's)
+                has_slippage = any(m in code for m in slippage_markers)
+                has_deadline = any(m in code for m in deadline_markers)
+                steps.append({"step": "slippage protection",
+                              "value": "detected" if has_slippage else "NOT FOUND"})
+                steps.append({"step": "deadline protection",
+                              "value": "detected" if has_deadline else "NOT FOUND"})
+
+                # If the contract does swaps without slippage/deadline,
+                # it's sandwichable
+                if not has_slippage and not has_deadline:
+                    return {"success": True, "attack": "sandwich",
+                            "target": target,
+                            "profit": "Sandwich: front-run + back-run to extract swap slippage",
+                            "steps": steps,
+                            "evidence": ("Swap function present but NO slippage protection "
+                                         "and NO deadline — sandwichable by MEV bots"),
+                            "source_finding": source_finding,
+                            "verdict": "UNVERIFIED"}  # needs mempool to confirm
+
+                # Contract has some protection — informational
+                steps.append({"step": "sandwich risk",
+                              "value": "contract has slippage/deadline protection"})
+            return {"success": False, "attack": "sandwich", "target": target,
+                    "steps": steps,
+                    "evidence": ("No sandwich attack surface found "
+                                 "(no swap function, or slippage protection present)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if has_swap and has_slippage else {})}
+
+        if attack == "frontrun":
+            # Frontrunning: can the contract's state changes be front-run
+            # for profit? Check for time-sensitive operations (liquidation,
+            # auction, claim) without commit-reveal or Flashbots protection.
+            code = self._code_hex()
+
+            # Time-sensitive functions
+            frontrun_targets = [
+                "0x69ab90df",  # liquidate(address,uint256,address,address) — Aave
+                "0xe8eda9df",  # liquidationCall(address,address,uint256,bool) — Aave V3
+                "0xc9c65396",  # auction(uint256) — NFT auctions
+                "0x3ccfd60b",  # withdraw(uint256) — claim/stake
+                "0x2e1a7d4d",  # withdraw(uint256) — WETH
+                "0xa69df4b1",  # claimReward() — staking rewards
+                "0x379607f5",  # compound(uint256) — compound interest
+                "0xb6b55f25",  # deposit() — vault entry
+            ]
+            has_frontrun_target = any(m in code for m in frontrun_targets)
+
+            # Protection mechanisms
+            commit_reveal = [
+                "0x52e0b902",  # commit(bytes32) — commit-reveal
+                "0x2029a73e",  # reveal(uint256,bytes32) — commit-reveal
+            ]
+            flashbots = [
+                "0x",  # Flashbots bundle
+                "MEV",  # MEV protection mention
+            ]
+            has_protection = any(m in code for m in commit_reveal)
+
+            steps.append({"step": "time-sensitive function",
+                          "value": "detected" if has_frontrun_target else "not found"})
+            steps.append({"step": "commit-reveal protection",
+                          "value": "detected" if has_protection else "NOT FOUND"})
+
+            if has_frontrun_target and not has_protection:
+                return {"success": True, "attack": "frontrun",
+                        "target": target,
+                        "profit": "Frontrunning: execute before victim for guaranteed profit",
+                        "steps": steps,
+                        "evidence": ("Time-sensitive function (liquidation/auction/claim) "
+                                     "without commit-reveal protection — frontrunnable"),
+                        "source_finding": source_finding,
+                        "verdict": "UNVERIFIED"}  # needs mempool
+            return {"success": False, "attack": "frontrun", "target": target,
+                    "steps": steps,
+                    "evidence": ("No frontrunning surface found "
+                                 "(no time-sensitive function, or commit-reveal present)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if has_protection else {})}
+
+        if attack == "mev":
+            # MEV (Miner Extractable Value) surface: comprehensive check
+            # for all MEV attack vectors on the contract. Combines sandwich,
+            # frontrunning, and liquidation MEV detection into one report.
+            code = self._code_hex()
+
+            # Sandwich vectors
+            swap_selectors = ["0x022c0d9f", "0x128acb08", "0x38ed1739",
+                              "0x8803dbee", "0x7ff36ab5", "0xfb3bdb41"]
+            has_swap = any(m in code for m in swap_selectors)
+
+            # Liquidation vectors (MEV bots compete for liquidation bonuses)
+            liq_selectors = ["0x69ab90df",  # liquidate — Aave V2
+                             "0xe8eda9df",  # liquidationCall — Aave V3
+                             "0xf5e2122a"]  # liquidate — Compound
+            has_liq = any(m in code for m in liq_selectors)
+
+            # Auction vectors (NFT/protocol auctions frontrunnable)
+            auction_selectors = ["0xc9c65396",  # auction
+                                 "0x4e1d9206",  # bid
+                                 "0x3af4e04e"]  # placeBid
+            has_auction = any(m in code for m in auction_selectors)
+
+            # Slippage protection
+            has_slippage = any(m in code for m in ["amountOutMin", "slippage", "minOut"])
+            has_deadline = any(m in code for m in ["deadline", "block.timestamp"])
+
+            vectors = []
+            if has_swap:
+                vectors.append("sandwich (swap without slippage)" if not has_slippage
+                              else "swap (slippage protected)")
+            if has_liq:
+                vectors.append("liquidation MEV (compete for bonus)")
+            if has_auction:
+                vectors.append("auction frontrunning")
+
+            steps.append({"step": "MEV vectors",
+                          "value": ", ".join(vectors) if vectors else "none detected"})
+            steps.append({"step": "slippage protection",
+                          "value": "present" if has_slippage else "missing"})
+
+            mev_score = len([v for v in vectors if "protected" not in v])
+
+            if mev_score > 0:
+                return {"success": True, "attack": "mev",
+                        "target": target,
+                        "profit": f"MEV exposure: {mev_score} exploitable vector(s)",
+                        "steps": steps,
+                        "evidence": (f"MEV vectors: {', '.join(vectors)}; "
+                                     f"slippage={'yes' if has_slippage else 'no'}"),
+                        "source_finding": source_finding,
+                        "verdict": "UNVERIFIED"}  # needs mempool
+            return {"success": False, "attack": "mev", "target": target,
+                    "steps": steps,
+                    "evidence": "No MEV attack surface detected.",
                     "source_finding": source_finding}
 
         return {"success": False, "attack": attack, "target": target,

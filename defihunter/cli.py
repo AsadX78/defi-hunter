@@ -299,7 +299,7 @@ def repo(ctx, target, rpc, as_json, no_fork):
               help='Target chain (ethereum, bsc, polygon, arbitrum, etc.)')
 @click.option('--output', '-o', default='defihunter-scan.json',
               help='JSON report path (default defihunter-scan.json)')
-@click.option('--format', '-f', type=click.Choice(['json', 'html', 'markdown']),
+@click.option('--format', '-f', type=click.Choice(['json', 'html', 'markdown', 'pdf']),
               default='json', help='Report format (default: json)')
 @click.option('--no-fork', is_flag=True, help='Skip fork verification')
 @click.option('--attacker', help='EOA that signs the fork proof txs '
@@ -506,7 +506,7 @@ def simulate(ctx):
     'inflation', 'admin', 'governance', 'oracle', 'reentrancy', 'bridge',
     'sandwich', 'twap', 'flashloan', 'withdraw', 'initialize', 'permit',
     'liquidation', 'forcesend', 'peg', 'crossfunc', 'delegatecall', 'mint',
-    'arbitrarycall', 'selfdestruct', 'approve',
+    'arbitrarycall', 'selfdestruct', 'approve', 'frontrun', 'mev',
 ]), required=True)
 @click.option('--target', '-t', required=True, help='Target contract address')
 @click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL')
@@ -699,7 +699,8 @@ def batch(targets, chain, rpc, attacks, output_dir, format, no_fork):
                                             "approve", "delegatecall", "selfdestruct",
                                             "oracle", "flashloan", "governance",
                                             "bridge", "twap", "crossfunc", "permit",
-                                            "liquidation", "forcesend", "peg"]
+                                            "liquidation", "forcesend", "peg",
+                                            "sandwich", "frontrun", "mev"]
                                            if attacks == "all"
                                            else [a.strip() for a in attacks.split(",")])
                             for atype in attack_types:

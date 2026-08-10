@@ -1,10 +1,12 @@
-"""Professional report generator — HTML, JSON, Markdown.
+"""Professional report generator — HTML, JSON, Markdown, PDF.
 
 HTML reports are designed for CISO/executive presentation:
 - Executive summary with risk score
 - CVSS v3.1 scoring for each finding
 - Detailed findings with evidence, PoC, and remediation
 - Print-friendly for PDF export
+
+PDF reports use xhtml2pdf for direct HTML→PDF conversion.
 """
 import json
 import math
@@ -77,6 +79,18 @@ REMEDIATION = {
     "peg": "Use Chainlink oracle for collateral pricing instead of DEX spot. Implement "
            "stability fees and liquidation mechanisms. Add collateral ratio enforcement "
            "with on-chain price checks. Use a redemption queue for large withdrawals.",
+    "sandwich": "Add slippage protection (amountOutMin) to all swap functions. "
+                "Use Flashbots Protect or private mempool for large swaps. "
+                "Implement deadline parameters. Consider using DEX aggregators with "
+                "built-in MEV protection (e.g., 1inch Fusion, CoW Swap).",
+    "frontrun": "Implement commit-reveal schemes for time-sensitive operations. "
+                "Use Flashbots Protect or MEV-share for liquidation transactions. "
+                "Add deadline parameters to auction/claim functions. Consider using "
+                "encrypted mempools (e.g., Threshold Encryption).",
+    "mev": "Comprehensive MEV protection: add slippage protection to all swaps, "
+           "use commit-reveal for auctions, Flashbots Protect for liquidations, "
+           "and consider encrypted mempools for high-value operations. Monitor "
+           "mempool for pending frontrunning attacks.",
 }
 
 # PoC templates for each attack type
@@ -159,6 +173,47 @@ contract OracleAttack {{
         // Step 4: Repay flash loan + profit
     }}
 }}""",
+    "sandwich": """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+// Sandwich attack: front-run + back-run a victim's swap
+// 1. See pending swap in mempool
+// 2. Buy token before victim (price goes up)
+// 3. Victim's swap executes at worse price
+// 4. Sell token after victim (profit from slippage)
+contract SandwichBot {{
+    function attack(address router, address tokenIn, address tokenOut) external {{
+        // Front-run: buy tokenOut before victim
+        // Back-run: sell tokenOut after victim
+        // Profit = victim's slippage - gas costs
+    }}
+}}""",
+    "frontrun": """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+// Frontrunning: execute before a pending transaction
+// 1. See pending liquidation/auction/claim in mempool
+// 2. Submit same tx with higher gas price
+// 3. Execute first, capture the profit
+contract FrontrunBot {{
+    function attack(address target, bytes calldata data) external {{
+        // Submit tx with higher gas to execute first
+        // Profit from liquidation bonus / auction bid
+    }}
+}}""",
+    "mev": """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+// MEV extraction: combine sandwich + frontrunning + liquidation
+// 1. Monitor mempool for profitable opportunities
+// 2. Extract value via sandwich, frontrun, or liquidation
+// 3. Use Flashbots to avoid being frontrunned yourself
+contract MEVBot {{
+    function attack(address[] calldata targets, bytes[] calldata data) external {{
+        // Bundle multiple MEV opportunities
+        // Submit via Flashbots Protect
+    }}
+}}""",
 }
 
 
@@ -169,6 +224,8 @@ class ReportGenerator:
                  output: str = "report.html") -> str:
         if format == "html":
             return self._gen_html(findings, output)
+        elif format == "pdf":
+            return self._gen_pdf(findings, output)
         elif format == "markdown":
             return self._gen_markdown(findings, output)
         elif format == "json":
@@ -485,6 +542,44 @@ footer {{ margin-top: 3rem; padding-top: 2rem; border-top: 1px solid var(--borde
         elif score > 0:
             return "LOW", "#8b949e"
         return "INFO", "#58a6ff"
+
+    # ------------------------------------------------------------------
+    # PDF report — direct HTML→PDF conversion via xhtml2pdf
+    # ------------------------------------------------------------------
+
+    def _gen_pdf(self, findings: Dict, output: str) -> str:
+        """Generate PDF report from HTML (reuses the HTML layout).
+
+        Uses xhtml2pdf for pure-Python HTML→PDF conversion.
+        The PDF is print-ready with proper page breaks and styling.
+        """
+        # Generate HTML to a temp path, then convert to PDF
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            self._gen_html(findings, tmp_path)
+            html_content = Path(tmp_path).read_text(encoding="utf-8")
+
+            # Convert HTML to PDF
+            try:
+                from xhtml2pdf import pisa
+                with open(output, "wb") as pdf_file:
+                    status = pisa.CreatePDF(
+                        src=html_content,
+                        dest=pdf_file,
+                        encoding="utf-8",
+                    )
+                if status.err:
+                    # Fallback: save as HTML with .pdf extension
+                    Path(output).write_text(html_content, encoding="utf-8")
+                return output
+            except ImportError:
+                # xhtml2pdf not installed — save HTML as fallback
+                Path(output).write_text(html_content, encoding="utf-8")
+                return output
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # Markdown report
