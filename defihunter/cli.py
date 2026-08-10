@@ -747,6 +747,66 @@ def batch(targets, chain, rpc, attacks, output_dir, format, no_fork):
     ui.ok(f"Batch scan complete: {len(target_list)} targets, {total_vulns} findings")
 
 
+@cli.command()
+@click.option('--target', '-t', required=True, help='Target contract address (0x...)')
+@click.option('--attack', '-a', default=None,
+              type=click.Choice(['reentrancy', 'mint', 'initialize', 'flashloan', 'permit',
+                                 'delegatecall', 'oracle', 'selfdestruct', 'arbitrarycall',
+                                 'approve', 'governance']),
+              help='Attack type to generate exploit for')
+@click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL (for auto-detection)')
+@click.option('--output', '-o', default='./exploit', help='Output directory (default: ./exploit)')
+@click.option('--all', 'all_attacks', is_flag=True, help='Generate exploits for all attack types')
+def exploit(target, attack, rpc, output, all_attacks):
+    """Generate ready-to-run Foundry exploit scripts.
+
+    Produces:
+      - contracts/Exploit*.sol  — attacker contract
+      - scripts/run-exploit.s.sol — Foundry script
+      - .env — environment variables
+
+    Run with: forge script scripts/run-exploit.s.sol --rpc-url $RPC --private-key $KEY
+    """
+    from defihunter.core.exploit_generator import ExploitGenerator
+
+    if not all_attacks and not attack:
+        raise click.UsageError("Either --attack or --all is required")
+
+    ui.rule("EXPLOIT GENERATOR")
+    ui.step("Target", target)
+    ui.step("Output", output)
+
+    gen = ExploitGenerator(output_dir=output)
+
+    if all_attacks:
+        ui.info("Generating exploits for ALL attack types...")
+        results = gen.generate_all(target)
+        for r in results:
+            ui.ok(f"Generated: {r['attack_type']}")
+    else:
+        ui.info(f"Generating exploit for: {attack}")
+        results = [gen.generate(attack, target)]
+
+    # Summary
+    ui.console.print()
+    ui.console.print(ui.summary_panel([
+        ("target", target),
+        ("exploits generated", str(len(results))),
+        ("output directory", output),
+        ("attack types", ", ".join(r.get("attack_type", attack) for r in results)),
+    ]))
+
+    # Instructions
+    ui.console.print()
+    ui.info("To run the exploit:")
+    ui.console.print(f"  cd {output}")
+    ui.console.print("  forge install foundry-rs/forge-std --no-commit")
+    ui.console.print("  # Edit .env with your values")
+    ui.console.print("  forge script scripts/run-exploit.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast")
+
+    ui.ok(f"Exploit scripts ready in {output}/")
+
+
 @cli.group()
 @click.pass_context
 def templates(ctx):
