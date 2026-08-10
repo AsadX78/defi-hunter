@@ -807,6 +807,187 @@ def exploit(target, attack, rpc, output, all_attacks):
     ui.ok(f"Exploit scripts ready in {output}/")
 
 
+@cli.command()
+@click.option('--output', '-o', default='./flashloan-exploit', help='Output directory')
+@click.option('--loan-token', default='USDC', help='Token to borrow (USDC, USDT, DAI, WETH)')
+@click.option('--loan-amount', default='10000000', help='Amount to borrow (in token units, e.g. 10M USDC)')
+@click.option('--pool', default='aave', type=click.Choice(['aave', 'uniswap', 'balancer']),
+              help='Flash loan provider')
+def flashloan(output, loan_token, loan_amount, pool):
+    """Generate flash loan exploit scripts (Aave/Uniswap/Balancer).
+
+    Produces a ready-to-run Foundry project that:
+    1. Borrows millions via flash loan
+    2. Executes exploit steps
+    3. Repays loan + fee
+    4. Sweeps profit
+    """
+    from defihunter.core.flashloan import FlashLoanExploit, AAVE_V3_POOL, TOKENS
+
+    ui.rule("FLASH LOAN EXPLOIT GENERATOR")
+    ui.step("Pool", pool)
+    ui.step("Loan Token", loan_token)
+    ui.step("Loan Amount", loan_amount)
+    ui.step("Output", output)
+
+    exploit = FlashLoanExploit()
+
+    # Set pool
+    if pool == "aave":
+        exploit.pool = AAVE_V3_POOL
+    elif pool == "uniswap":
+        exploit.pool = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"  # USDC/WETH pool
+    elif pool == "balancer":
+        exploit.pool = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+
+    exploit.loan_token = loan_token
+    exploit.loanAmount = int(loan_amount) * (10 ** 6 if loan_token in ("USDC", "USDT") else 10 ** 18)
+
+    files = exploit.save(output)
+
+    ui.console.print()
+    ui.info("Files generated:")
+    for name, path in files.items():
+        ui.step(name, path)
+
+    ui.console.print()
+    ui.info("To run:")
+    ui.console.print(f"  cd {output}")
+    ui.console.print("  forge install foundry-rs/forge-std --no-commit")
+    ui.console.print("  forge script scripts/run-flashloan.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast")
+
+    ui.ok(f"Flash loan exploit ready in {output}/")
+
+
+@cli.command()
+@click.option('--output', '-o', default='./mev-tools', help='Output directory')
+@click.option('--relay', default='flashbots', type=click.Choice(['flashbots', 'bloxroute', 'eden']),
+              help='MEV relay to use')
+def mev(output, relay):
+    """Generate MEV tools — Flashbots bundle submission + anti-sandwich protection.
+
+    Produces:
+      - SendBundle.sol — submit exploits privately via Flashbots
+      - MEVProtection.sol — protect users from sandwich attacks
+    """
+    from defihunter.core.mev import MEVBundle
+
+    ui.rule("MEV TOOLS GENERATOR")
+    ui.step("Relay", relay)
+    ui.step("Output", output)
+
+    bundle = MEVBundle()
+    files = bundle.save(output)
+
+    ui.console.print()
+    ui.info("Files generated:")
+    for name, path in files.items():
+        ui.step(name, path)
+
+    ui.console.print()
+    ui.info("Usage:")
+    ui.console.print("  SendBundle.sol — submit exploit txs privately (no mempool)")
+    ui.console.print("  MEVProtection.sol — protect users from sandwich attacks")
+
+    ui.ok(f"MEV tools ready in {output}/")
+
+
+@cli.command()
+@click.option('--protocols', '-p', required=True,
+              help='Comma-separated protocols: name:address:type,... '
+                   '(type: flash_loan, dex, vault, lending, bridge, governance)')
+@click.option('--output', '-o', default='./chain-exploit', help='Output directory')
+def chain(protocols, output):
+    """Generate cross-protocol exploit chains.
+
+    Chain multiple protocols: Aave → Uniswap → Victim Vault → Profit
+
+    Example:
+      defihunter chain -p "aave:0x87870Bca...:flash_loan,uniswap:0x88e6A0c...:dex,victim:0x...:vault"
+    """
+    from defihunter.core.chaining import ExploitChain
+
+    ui.rule("CROSS-PROTOCOL EXPLOIT CHAIN")
+    ui.step("Output", output)
+
+    exploit_chain = ExploitChain()
+
+    # Parse protocols
+    for proto_str in protocols.split(","):
+        parts = proto_str.strip().split(":")
+        if len(parts) != 3:
+            ui.warn(f"Invalid protocol format: {proto_str} (expected name:address:type)")
+            continue
+        name, address, proto_type = parts
+        exploit_chain.add_protocol(name.strip(), address.strip(), proto_type.strip())
+        ui.step(f"Protocol: {name.strip()}", f"{proto_type.strip()} @ {address.strip()}")
+
+    files = exploit_chain.save(output)
+
+    ui.console.print()
+    ui.info("Files generated:")
+    for name, path in files.items():
+        ui.step(name, path)
+
+    ui.console.print()
+    ui.info("To run:")
+    ui.console.print(f"  cd {output}")
+    ui.console.print("  forge install foundry-rs/forge-std --no-commit")
+    ui.console.print("  forge script scripts/run-chain.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast")
+
+    ui.ok(f"Cross-protocol exploit chain ready in {output}/")
+
+
+@cli.command()
+@click.option('--address', '-a', multiple=True, help='Address to monitor (can repeat)')
+@click.option('--chain', '-c', default='ethereum', help='Chain to monitor')
+@click.option('--interval', '-i', default=12, help='Poll interval in seconds')
+@click.option('--alert', default='console', type=click.Choice(['console', 'telegram', 'discord']),
+              help='Alert destination')
+@click.option('--output', '-o', default='./monitor', help='Output directory')
+def monitor(address, chain, interval, alert, output):
+    """Real-time vulnerability monitoring — watch 24/7, alert on new vulns.
+
+    Monitors:
+      - New contract deployments
+      - Suspicious transactions
+      - Vulnerability patterns
+      - Flash loan attacks in progress
+    """
+    from defihunter.core.monitor import VulnerabilityMonitor
+
+    ui.rule("VULNERABILITY MONITOR")
+    ui.step("Chain", chain)
+    ui.step("Poll Interval", f"{interval}s")
+    ui.step("Alerts", alert)
+    ui.step("Output", output)
+
+    mon = VulnerabilityMonitor(chain=chain, poll_interval=interval)
+
+    for addr in address:
+        mon.watch_address(addr)
+        ui.step("Watching", addr)
+
+    files = mon.save(output)
+
+    ui.console.print()
+    ui.info("Files generated:")
+    for name, path in files.items():
+        ui.step(name, path)
+
+    ui.console.print()
+    ui.info(f"Start monitoring:")
+    ui.console.print(f"  cd {output}")
+    if alert == "telegram":
+        ui.console.print("  python telegram_bot.py")
+    elif alert == "discord":
+        ui.console.print("  python discord_webhook.py")
+    else:
+        ui.console.print("  python -c 'from monitor import VulnerabilityMonitor; ...'")
+
+    ui.ok(f"Monitor tools ready in {output}/")
+
+
 @cli.group()
 @click.pass_context
 def templates(ctx):
