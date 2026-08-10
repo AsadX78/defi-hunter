@@ -254,14 +254,43 @@ class TestForkSimulator:
         return calls, send
 
     def test_reentrancy_proof_hits_payout_sink(self, monkeypatch):
+        """A payout sink that ACTUALLY sends ETH when called → CONFIRMED."""
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        calls = []
+        target_balance = 10 ** 18  # 1 ETH in the vault
+
+        def send(selector, args):
+            calls.append(selector)
+            if selector == "withdraw()":
+                nonlocal target_balance
+                target_balance -= 10 ** 15  # vault pays out 0.001 ETH
+                return {"ok": True, "stdout": "0x", "stderr": ""}
+            return {"ok": False, "stdout": "0x", "stderr": ""}
+
+        monkeypatch.setattr(fork, "_send", send)
+        monkeypatch.setattr(
+            fork, "_balance",
+            lambda addr: (str(target_balance) if addr.lower() == "0x1111" else "0"))
+        res = fork.run("reentrancy", "0x1111")
+        assert res["success"]
+        assert "withdraw()" in res["evidence"]
+        assert "moved ETH" in res["evidence"]  # state diff, not just mined
+        assert any("withdraw(uint256)" in c for c in calls)
+
+    def test_reentrancy_proof_mined_noop_is_refuted(self, monkeypatch):
+        """WETH regression: withdraw() mines into a payable fallback that
+        does nothing → mined but NO state change → REFUTED, not CONFIRMED."""
         from defihunter.core.simulator import ForkSimulator
         fork = self._ready_fork(monkeypatch, "0x1111")
         calls, send = self._fake_send(ok_for={"withdraw()"})
         monkeypatch.setattr(fork, "_send", send)
+        monkeypatch.setattr(fork, "_balance", lambda addr: "0")  # nothing moves
         res = fork.run("reentrancy", "0x1111")
-        assert res["success"]
-        assert "withdraw()" in res["evidence"]
-        assert any("withdraw(uint256)" in c for c in calls)
+        assert not res["success"]
+        assert res["verdict"] == "REFUTED"
+        assert "no state change" in str(res["steps"])
+        assert "No permissionless payout sink" in res["evidence"]
 
     def test_reentrancy_proof_no_sink(self, monkeypatch):
         from defihunter.core.simulator import ForkSimulator
@@ -304,31 +333,88 @@ class TestForkSimulator:
     def test_selfdestruct_proof_transfers_balance(self, monkeypatch):
         from defihunter.core.simulator import ForkSimulator
         fork = self._ready_fork(monkeypatch, "0x1111")
-        calls, send = self._fake_send(ok_for={"kill()"})
-        monkeypatch.setattr(fork, "_send", send)
-        code_after = [True]
+        calls = []
+        present = [True]
 
-        def has_code():
-            return code_after[0]
-        monkeypatch.setattr(fork, "_has_code", has_code)
-        monkeypatch.setattr(fork, "_balance", lambda addr: "500000000000000000")
+        def send(selector, args):
+            calls.append(selector)
+            if selector == "kill()":
+                present[0] = False  # kill removes the code
+                return {"ok": True, "stdout": "0x", "stderr": ""}
+            return {"ok": False, "stdout": "0x", "stderr": ""}
+        monkeypatch.setattr(fork, "_send", send)
+        monkeypatch.setattr(fork, "_has_code", lambda: present[0])
+        # target holds 1 ETH before; after kill the code is gone
+        monkeypatch.setattr(
+            fork, "_balance",
+            lambda addr: ("500000000000000000" if addr.lower() == "0x1111"
+                          else "0"))
         res = fork.run("selfdestruct", "0x1111")
         assert res["success"]
         assert "kill() mined" in res["evidence"]
         assert "→" in res["evidence"]  # state-diff before → after
 
+    def test_selfdestruct_proof_mined_noop_is_refuted(self, monkeypatch):
+        """kill() that mines but leaves code and ETH untouched (fallback hit)
+        → REFUTED, not CONFIRMED."""
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        calls, send = self._fake_send(ok_for={"kill()"})
+        monkeypatch.setattr(fork, "_send", send)
+        monkeypatch.setattr(fork, "_has_code", lambda: True)
+        monkeypatch.setattr(fork, "_balance", lambda addr: "500000000000000000")
+        res = fork.run("selfdestruct", "0x1111")
+        assert not res["success"]
+        assert res["verdict"] == "REFUTED"
+        assert "no state change" in str(res["steps"])
+
     def test_mint_evidence_has_state_diff(self, monkeypatch):
+        """mint() that mines AND credits the caller → CONFIRMED (before→after)."""
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        monkeypatch.setattr(fork, "_send",
+                            lambda sel, args: {"ok": True, "stdout": "0x", "stderr": ""})
+        reads = {"count": 0}
+
+        def call(sel, args, extra_from=True):
+            reads["count"] += 1
+            return {"ok": True,
+                    "stdout": "1000000000000000000000000" if reads["count"] > 1 else "0",
+                    "stderr": ""}
+        monkeypatch.setattr(fork, "_call", call)
+        res = fork.run("mint", "0x1111")
+        assert res["success"]
+        assert "→" in res["evidence"]  # balance before → after
+
+    def test_mint_proof_mined_noop_is_refuted(self, monkeypatch):
+        """A mint() that mines without crediting the caller (no-op / fallback
+        hit, or minting to a fixed treasury) → REFUTED, not CONFIRMED."""
         from defihunter.core.simulator import ForkSimulator
         fork = self._ready_fork(monkeypatch, "0x1111")
         monkeypatch.setattr(fork, "_send",
                             lambda sel, args: {"ok": True, "stdout": "0x", "stderr": ""})
         monkeypatch.setattr(fork, "_call",
                             lambda sel, args, extra_from=True:
-                                {"ok": True, "stdout": "1000000000000000000000000",
-                                 "stderr": ""})
+                                {"ok": True, "stdout": "0x0", "stderr": ""})
         res = fork.run("mint", "0x1111")
-        assert res["success"]
-        assert "→" in res["evidence"]  # balance before → after
+        assert not res["success"]
+        assert res["verdict"] == "REFUTED"
+        assert "No permissionless mint" in res["evidence"]
+
+    def test_approve_proof_mined_noop_is_refuted(self, monkeypatch):
+        """approve() that mines but grants no allowance (fallback hit) →
+        REFUTED, not CONFIRMED."""
+        from defihunter.core.simulator import ForkSimulator
+        fork = self._ready_fork(monkeypatch, "0x1111")
+        calls, send = self._fake_send(ok_for={"approve(address,uint256)"})
+        monkeypatch.setattr(fork, "_send", send)
+        monkeypatch.setattr(fork, "_call",
+                            lambda sel, args, extra_from=True:
+                                {"ok": True, "stdout": "0x0", "stderr": ""})
+        res = fork.run("approve", "0x1111")
+        assert not res["success"]
+        assert res["verdict"] == "REFUTED"
+        assert "No permissionless approve" in res["evidence"]
 
 
 def _render(renderable) -> str:

@@ -163,15 +163,20 @@ def test_run_verdict_refuted_when_abi_function_reverts(monkeypatch):
 
 
 def test_run_verdict_confirmed_when_abi_mint_succeeds(monkeypatch):
-    """ABI mint() mines from an arbitrary account → CONFIRMED with the
-    before/after balance evidence."""
+    """ABI mint() mines from an arbitrary account AND credits the caller →
+    CONFIRMED with the before/after balance evidence. (A mined mint that
+    does not change balanceOf is a no-op → REFUTED, covered separately.)"""
     f = _fork(MINT_ABI)
     monkeypatch.setattr(f, "_has_code", lambda: True)
     monkeypatch.setattr(f, "_fund_attacker", lambda: True)
+    reads = {"count": 0}
 
     def fake_call(sel, args, extra_from=True):
         if sel == "balanceOf(address)":
-            return {"ok": True, "stdout": "1000000", "stderr": ""}
+            reads["count"] += 1
+            return {"ok": True,
+                    "stdout": "1000000" if reads["count"] > 1 else "0",
+                    "stderr": ""}
         return {"ok": True, "stdout": "", "stderr": ""}
 
     monkeypatch.setattr(f, "_call", fake_call)
@@ -181,6 +186,22 @@ def test_run_verdict_confirmed_when_abi_mint_succeeds(monkeypatch):
                 abi=MINT_ABI)
     assert res["success"] and res["verdict"] == "CONFIRMED"
     assert "1000000" in res["evidence"]
+
+
+def test_run_verdict_refuted_when_abi_mint_noop(monkeypatch):
+    """ABI mint() mines from an arbitrary account but balanceOf does NOT
+    change (no-op / fallback hit / minting to a fixed treasury) → REFUTED."""
+    f = _fork(MINT_ABI)
+    monkeypatch.setattr(f, "_has_code", lambda: True)
+    monkeypatch.setattr(f, "_fund_attacker", lambda: True)
+    monkeypatch.setattr(f, "_call", lambda sel, args, extra_from=True:
+                        {"ok": True, "stdout": "0", "stderr": ""})
+    monkeypatch.setattr(f, "_send", lambda sel, args:
+                        {"ok": True, "stdout": "mined", "stderr": ""})
+    res = f.run("mint", "0x1111111111111111111111111111111111111111",
+                abi=MINT_ABI)
+    assert not res["success"]
+    assert res["verdict"] == "REFUTED"
 
 
 def test_run_refutes_no_code_target():

