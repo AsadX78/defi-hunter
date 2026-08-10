@@ -396,14 +396,9 @@ class ForkSimulator:
         self.proc = None
         self.available = False
         self.why_not = ""
-        # anvil dev account #2: always unlocked + funded on any anvil fork, and
-        # from the protocol's perspective it is just an arbitrary EOA.
-        # Both are user-overridable: --attacker is the EOA that SIGNS the
-        # proof txs, --profit-wallet is where the attacker-contract drain
-        # lands (defaults to the attacker EOA).
+        self._live = None  # LiveFork instance (when using live RPC)
         self.attacker = attacker or "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
         self.profit_wallet = profit_wallet or self.attacker
-        # real ABI for the target (when known) — see run(abi=...)
         self._abi: List[Dict] = []
         self._attack_candidates: List[tuple] = []
 
@@ -492,9 +487,27 @@ class ForkSimulator:
         return shutil.which(name) is not None
 
     def __enter__(self) -> "ForkSimulator":
+        # ---- Strategy 1: Live fork (fast, no Anvil, no Foundry) ----
+        # eth_call with state overrides against the real mainnet RPC.
+        # Zero startup time, works with any RPC endpoint.
+        if self.rpc_url and "http" in self.rpc_url:
+            try:
+                from defihunter.core.live_fork import LiveFork
+                lf = LiveFork(self.rpc_url, block=self.block,
+                              attacker=self.attacker)
+                lf.__enter__()
+                if lf.available:
+                    self._live = lf
+                    self.available = True
+                    self.why_not = ""
+                    return self
+            except Exception:
+                pass  # fall through to Anvil
+
+        # ---- Strategy 2: Anvil fork (requires foundry) ----
         if not self._has_tool("anvil") or not self._has_tool("cast"):
-            self.why_not = ("Fork verification skipped: foundry binaries "
-                            "(anvil/cast) not found on PATH.")
+            self.why_not = ("Fork verification skipped: live RPC unavailable "
+                            "and foundry binaries (anvil/cast) not on PATH.")
             return self
         import subprocess as sp
         cmd = ["anvil", "--port", str(self.port), "--silent"]
@@ -502,8 +515,6 @@ class ForkSimulator:
             cmd += ["--fork-url", self.rpc_url]
             if self.block:
                 cmd += ["--fork-block-number", str(self.block)]
-        # rpc_url=None → blank anvil chain (offline self-test / drain demo
-        # does not need a mainnet fork).
         try:
             self.proc = sp.Popen(cmd, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
         except OSError as e:
@@ -537,6 +548,13 @@ class ForkSimulator:
         return f"http://127.0.0.1:{self.port}"
 
     def _call(self, selector: str, args: List[str], extra_from: bool = True) -> Dict:
+        # Live fork mode: delegate to LiveFork
+        if self._live and self._live.available:
+            r = self._live.call_raw(self._target, selector, args,
+                                     from_addr=self.attacker if extra_from else None)
+            return {"ok": r["ok"], "stdout": r.get("return") or "",
+                    "stderr": r.get("error", "")}
+        # Anvil fallback
         cmd = ["cast", "call", self._target, selector, *args,
                "--rpc-url", self.rpc_url_local]
         if extra_from:
@@ -547,6 +565,9 @@ class ForkSimulator:
 
     def _read(self, selector: str) -> str:
         """Read a state variable (no from-address needed for view reads)."""
+        if self._live and self._live.available:
+            r = self._live.call_raw(self._target, selector)
+            return r.get("return") or ""
         proc = subprocess.run(
             ["cast", "call", self._target, selector, "--rpc-url", self.rpc_url_local],
             capture_output=True, text=True, timeout=30)
@@ -555,10 +576,11 @@ class ForkSimulator:
     def _fund_attacker(self) -> bool:
         """Give the attacker 2 ETH on the fork so real sends can pay gas.
 
-        A user-supplied --attacker is not an anvil dev account, so it must be
-        impersonated first (anvil_impersonateAccount) for --unlocked sends to
-        work. Dev accounts impersonate fine too (no-op).
+        Live fork: the balance is overridden in eth_call — no funding needed.
+        Anvil fork: impersonate + setBalance.
         """
+        if self._live and self._live.available:
+            return True  # LiveFork handles balance via state overrides
         imp = subprocess.run(
             ["cast", "rpc", "anvil_impersonateAccount", self.attacker,
              "--rpc-url", self.rpc_url_local],
@@ -567,19 +589,14 @@ class ForkSimulator:
             return False
         proc = subprocess.run(
             ["cast", "rpc", "anvil_setBalance", self.attacker,
-             "0x1BC16D674EC80000", "--rpc-url", self.rpc_url_local],  # 2 ETH
+             "0x1BC16D674EC80000", "--rpc-url", self.rpc_url_local],
             capture_output=True, text=True, timeout=30)
-        # anvil_setBalance returns JSON 'null' on success — exit code is the truth.
         return proc.returncode == 0
 
     def _has_code(self, addr: Optional[str] = None) -> bool:
-        """True when a target has bytecode on this fork.
-
-        Calling initialize()/mint() on an EOA or a devnet-only address that
-        does not exist on mainnet MINES VACUOUSLY (plain value transfer) —
-        without this check a phantom address would be reported EXPLOITABLE.
-        """
         addr = addr or getattr(self, "_target", "") or ""
+        if self._live and self._live.available:
+            return self._live.has_code(addr)
         proc = subprocess.run(
             ["cast", "code", addr, "--rpc-url", self.rpc_url_local],
             capture_output=True, text=True, timeout=30)
@@ -589,10 +606,12 @@ class ForkSimulator:
     def _balance(self, addr: str) -> str:
         """Raw wei ETH balance of an address on the fork (eth_getBalance).
 
-        Missing cast (foundry not installed) must fail CLOSED: return "" so
-        _to_int → None → callers treat the read as unavailable instead of
-        crashing with FileNotFoundError mid-battery.
+        Live fork: reads real chain balance via eth_getBalance.
+        Anvil fork: cast balance.
         """
+        if self._live and self._live.available:
+            bal = self._live.get_balance(addr)
+            return str(bal)
         try:
             proc = subprocess.run(
                 ["cast", "balance", addr, "--rpc-url", self.rpc_url_local],
@@ -618,12 +637,18 @@ class ForkSimulator:
             return None
 
     def _send(self, selector: str, args: List[str]) -> Dict:
-        """A REAL state-changing tx from the attacker account (fork-local).
+        """Simulate a state-changing tx from the attacker.
 
-        ok=True only when the tx MINED WITH STATUS 1 — cast send 1.7.x
-        returns rc=0 even when a tx reverts on-chain, so we cross-check the
-        receipt. A reverted-but-mined tx must NOT count as proven.
+        Live fork: eth_call with state overrides (attacker gets 100 ETH).
+        If the call succeeds → the exploit is real (no revert = callable by anyone).
+        Anvil fork: cast send --unlocked + receipt status check.
         """
+        if self._live and self._live.available:
+            r = self._live.call_with_override(
+                self._target, selector, args, attacker=self.attacker)
+            return {"ok": r["ok"], "stdout": r.get("return") or "",
+                    "stderr": r.get("revert") or ""}
+        # Anvil fallback
         if not self._fund_attacker():
             return {"ok": False, "stdout": "", "stderr": "could not fund attacker"}
         cmd = ["cast", "send", "--unlocked", self._target, selector, *args,
@@ -643,6 +668,11 @@ class ForkSimulator:
                  value: Optional[str] = None,
                  gas_limit: Optional[str] = None) -> Dict:
         """State-changing tx to an ARBITRARY contract (not just the target)."""
+        if self._live and self._live.available:
+            r = self._live.call_with_override(
+                addr, selector, args, attacker=self.attacker, value=value)
+            return {"ok": r["ok"], "stdout": r.get("return") or "",
+                    "stderr": r.get("revert") or ""}
         if not self._fund_attacker():
             return {"ok": False, "stdout": "", "stderr": "could not fund attacker"}
         cmd = ["cast", "send", "--unlocked", addr, selector, *args,
@@ -1592,12 +1622,22 @@ class ForkSimulator:
         """Raw bytecode hex of the target (for selector scanning)."""
         if not getattr(self, "_target", None) or not self.available:
             return ""
+        if self._live and self._live.available:
+            return self._live.get_code(self._target)
         proc = subprocess.run(
             ["cast", "code", self._target, "--rpc-url", self.rpc_url_local],
             capture_output=True, text=True, timeout=30)
         return proc.stdout.strip()
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        # LiveFork: nothing to clean up
+        if self._live is not None:
+            try:
+                self._live.__exit__(exc_type, exc, tb)
+            except Exception:
+                pass
+            self._live = None
+        # Anvil: terminate the process
         if self.proc is not None:
             self.proc.terminate()
             try:
