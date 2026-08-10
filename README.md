@@ -35,8 +35,8 @@ you through the whole hunt with prompts:
 ```
 $ defihunter
 
-  1. GitHub repo URL of the protocol
-     → e.g. https://github.com/Layr-Labs/eigenlayer-contracts
+   1. GitHub repo URL of the protocol
+      → e.g. https://github.com/example-org/example-protocol
   2. RPC URL (Enter = your saved RPC or eth.drpc.org, or type 'skip')
      → clones the repo, extracts every 0x…40 address, verifies which
        ones actually have deployed code on-chain
@@ -51,7 +51,7 @@ $ defihunter
 You can skip prompts with flags for scripting:
 
 ```bash
-defihunter wizard --repo https://github.com/Layr-Labs/eigenlayer-contracts \
+defihunter wizard --repo https://github.com/example-org/example-protocol \
                   --check both \
                   --attacks initialize,admin,mint,withdraw
 ```
@@ -64,9 +64,9 @@ Three ways to hunt a protocol that has no public repo:
 
 1. **Just a protocol name?** Let DefiLlama find the addresses (v1.3.4):
    ```bash
-   defihunter wizard -r llama:spark -c both
+   defihunter wizard -r llama:protocol-name -c both
    ```
-   Or type the name straight into the wizard prompt (`spark`, `aave`, `lido`…).
+   Or type the name straight into the wizard prompt (`protocol-a`, `protocol-b`, etc.).
    It resolves the anchor contract(s), website, chains, and GitHub org, then
    runs the normal flow. The anchor is often just the token — the wizard will
    offer to go deeper by scanning a repo from the protocol's GitHub org
@@ -79,19 +79,20 @@ Three ways to hunt a protocol that has no public repo:
    heavy use, set a token to lift the cap to 5,000 req/hr:
    ```bash
    export GITHUB_TOKEN=ghp_xxx   # or GH_TOKEN
-   defihunter wizard -r llama:spark
+   defihunter wizard -r llama:protocol-name
    ```
 
    Since v1.3.8 the wizard also runs an **anchor identity check**: beyond
    "code exists", it pulls the on-chain `name()`/`symbol()` and confirms they
    match the protocol DefiLlama resolved (`✓ matches` / `✗ MISMATCH`). This
-   catches wrong anchors fast — e.g. `llama:eigenlayer` resolves to EigenCloud
-   on DefiLlama, but the token identifies itself as *EigenLayer*; the tool
-   flags that mismatch instead of letting the sims burn hours on it.
+   catches wrong anchors fast — e.g. `llama:example-protocol` resolves to
+   ExampleProtocol on DefiLlama, but the token identifies itself as
+   *ExampleProtocol*; the tool flags that mismatch instead of letting the
+   sims burn hours on it.
 
 2. **Paste 0x addresses directly** — skip the repo entirely:
    ```bash
-   defihunter wizard -r "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2,0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" -c both
+   defihunter wizard -r "0xYourTokenAddress1,0xYourTokenAddress2" -c both
    ```
    (the wizard prompt accepts the same — comma/space separated). Addresses come
    from anywhere: a DEX UI, a block explorer, `cast`, or step 4 below.
@@ -104,7 +105,7 @@ Three ways to hunt a protocol that has no public repo:
 4. **Scrape a website** — no addresses either? Let recon find them on the
    protocol's site, then paste the results into the wizard:
    ```bash
-   defihunter recon scan --target sky.money --rpc "$DEFIHUNTER_RPC"
+   defihunter recon scan --target target-protocol.com --rpc "$DEFIHUNTER_RPC"
    ```
 
 The rest of the flow (verify → preview → static/simulation → HTML report) is
@@ -158,7 +159,7 @@ pip install -e ".[dev]"
 
 ```bash
 # Scan a protocol for contracts
-defihunter recon scan --target sky.money --rpc $RPC_URL
+defihunter recon scan --target target-protocol.com --rpc $RPC_URL
 
 # Analyze a specific contract
 defihunter analyze contract --address 0x1234... --rpc $RPC_URL
@@ -266,7 +267,7 @@ from defihunter.core.reporter import ReportGenerator
 
 # Step 1: Recon
 scanner = ReconScanner(rpc_url="https://...")
-results = scanner.scan("sky.money", deep=True)
+results = scanner.scan("target-protocol.com", deep=True)
 
 # Step 2: Analyze
 analyzer = ContractAnalyzer(rpc_url="https://...")
