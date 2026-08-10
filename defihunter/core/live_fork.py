@@ -13,6 +13,7 @@ How it works:
 
 For reentrancy detection (multi-call traces):
     Use `trace_call` (Parity/OpenEthereum/Geth trace API) which returns
+    a full call trace — no local fork needed.
     the full call tree including nested calls. A reentrancy shows as
     repeated calls to the target within a single top-level call.
 
@@ -27,6 +28,7 @@ Requirements:
 
 import json
 import subprocess
+import time
 from typing import Any, Dict, List, Optional
 
 # Default attacker balance for simulation (100 ETH in wei)
