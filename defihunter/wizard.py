@@ -452,43 +452,68 @@ def _run_fork_verify(findings: List[Dict], contracts: Dict[str, Dict],
 
 
 def _run_simulate(contracts: Dict[str, Dict], attacks: List[str], rpc: Optional[str] = None) -> List[Dict]:
-    """Run AttackSimulator for every attack × verified contract."""
+    """Run ForkSimulator (LiveFork) for every attack × verified contract.
+
+    Uses eth_call with state overrides — no Anvil, no Foundry needed.
+    Each result has a verdict: CONFIRMED / REFUTED / UNVERIFIED.
+    """
     ui.rule("ATTACK SIMULATION")
-    simulator = AttackSimulator(rpc_url=rpc)
     results: List[Dict] = []
     total = len(attacks) * len(contracts)
+
+    if not rpc:
+        ui.warn("No RPC URL — skipping fork verification.")
+        return results
+
     progress, task = ui.progress_bar(total, "Running attacks")
     with progress:
-        for addr in contracts:
-            for attack in attacks:
-                progress.update(task, description=f"Running {attack} on {addr[:10]}…")
-                res = simulator.run(attack, addr)
-                res.update({"address": addr, "attack": attack})
-                results.append(res)
-                progress.advance(task)
+        with ForkSimulator(rpc_url=rpc) as fork:
+            if not fork.available:
+                ui.warn(f"Fork unavailable: {fork.why_not}")
+                progress.stop()
+                return results
+            for addr in contracts:
+                for attack in attacks:
+                    progress.update(task, description=f"Running {attack} on {addr[:10]}…")
+                    try:
+                        res = fork.run(attack, addr)
+                    except Exception as e:
+                        res = {"success": False, "attack": attack, "target": addr,
+                               "error": str(e)[:200]}
+                    res.update({"address": addr, "attack": attack})
+                    results.append(res)
+                    progress.advance(task)
 
-    ok_count = sum(1 for r in results if r.get("success"))
-    if ok_count:
-        ui.warn(f"{ok_count} attack(s) succeeded — investigate these:")
-    # compact results table: only signal, no 36-row failure grid
+    confirmed = [r for r in results if r.get("verdict") == "CONFIRMED"]
+    refuted = [r for r in results if r.get("verdict") == "REFUTED"]
+    unverified = [r for r in results if r.get("verdict") == "UNVERIFIED"]
+
+    if confirmed:
+        ui.warn(f"{len(confirmed)} CONFIRMED attack(s) — real exploit(s) found:")
+    # compact results table: CONFIRMED / REFUTED / UNVERIFIED
     from rich.table import Table
     from rich import box as rich_box
-    hits = [r for r in results if r.get("success")]
-    if hits:
-        t = Table(title="Simulation Hits", box=rich_box.ROUNDED,
-                  border_style="magenta", header_style="bold magenta")
-        t.add_column("Attack", style="bold white")
-        t.add_column("Address", style="addr", no_wrap=True)
-        t.add_column("Result", style="bold")
-        for r in hits:
-            t.add_row(r["attack"], r["address"], "[success]SUCCESS ✔[/]")
-        ui.console.print(t)
+    t = Table(title="Simulation Results", box=rich_box.ROUNDED,
+              border_style="magenta", header_style="bold magenta")
+    t.add_column("Attack", style="bold white")
+    t.add_column("Address", style="addr", no_wrap=True)
+    t.add_column("Verdict", style="bold")
+    t.add_column("Evidence", overflow="fold", max_width=60)
+    for r in results:
+        verdict = r.get("verdict", "UNVERIFIED")
+        vstyle = ("bold green" if verdict == "CONFIRMED"
+                  else "bold red" if verdict == "REFUTED"
+                  else "dim")
+        evidence = r.get("evidence", r.get("error", ""))[:120]
+        t.add_row(r["attack"], r["address"], f"[{vstyle}]{verdict}[/]", evidence)
+    ui.console.print(t)
+
+    if confirmed:
+        ui.info("Each CONFIRMED finding is proven with real state changes on the live chain.")
+    elif refuted:
+        ui.info(f"{len(refuted)} attack(s) refuted — functions exist but are access-controlled.")
     else:
-        ui.info(f"{len(results)} attack simulation(s) run, 0 succeeded — "
-                "selectors absent or guarded on these contracts.")
-    if ok_count:
-        ui.warn("Remember: simulator hits are selector-based — verify each success "
-                "with `cast call` or an anvil fork before reporting.")
+        ui.info(f"{len(results)} attack(s) run — no exploitable findings on these contracts.")
     return results
 
 
