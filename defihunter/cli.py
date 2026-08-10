@@ -514,8 +514,10 @@ def simulate(ctx):
 @click.option('--block', '-b', type=int, help='Fork block number')
 @click.option('--format', '-f', type=click.Choice(['json', 'text']), default='text',
               help='Output format')
+@click.option('--mint-pct', type=int, default=10,
+              help='Percentage of total supply to mint for mint attack (default: 10%%)')
 @click.pass_context
-def run(ctx, attack, target, rpc, chain, block, format):
+def run(ctx, attack, target, rpc, chain, block, format, mint_pct):
     """Run attack simulation on a real fork"""
     from defihunter.core.chains import get_chain, detect_chain_from_rpc
     from defihunter.core.simulator import ForkSimulator
@@ -533,7 +535,7 @@ def run(ctx, attack, target, rpc, chain, block, format):
         rpc_url = chain_info.rpc_url
 
     ui.rule("SIMULATE")
-    ui.step(f"Attack", attack)
+    ui.step("Attack", attack)
     ui.step("Target", target)
     ui.step("Chain", chain_info.name)
 
@@ -542,6 +544,7 @@ def run(ctx, attack, target, rpc, chain, block, format):
         try:
             with ForkSimulator(rpc_url=rpc_url, block=block) as fork:
                 if fork.available:
+                    fork._mint_pct = mint_pct  # configure mint percentage
                     result = fork.run(attack, target)
                 else:
                     # Fallback to AttackSimulator (static analysis)

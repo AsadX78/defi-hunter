@@ -375,14 +375,18 @@ class TestForkSimulator:
         """mint() that mines AND credits the caller → CONFIRMED (before→after)."""
         from defihunter.core.simulator import ForkSimulator
         fork = self._ready_fork(monkeypatch, "0x1111")
+        fork._mint_pct = 10  # set mint percentage
         monkeypatch.setattr(fork, "_send",
                             lambda sel, args: {"ok": True, "stdout": "0x", "stderr": ""})
         reads = {"count": 0}
 
         def call(sel, args, extra_from=True):
             reads["count"] += 1
+            # totalSupply() returns 10M tokens, balanceOf returns 0 then 100k
+            if "totalSupply" in sel:
+                return {"ok": True, "stdout": "10000000000000000000000000", "stderr": ""}
             return {"ok": True,
-                    "stdout": "1000000000000000000000000" if reads["count"] > 1 else "0",
+                    "stdout": "1000000000000000000000000" if reads["count"] > 2 else "0",
                     "stderr": ""}
         monkeypatch.setattr(fork, "_call", call)
         res = fork.run("mint", "0x1111")
