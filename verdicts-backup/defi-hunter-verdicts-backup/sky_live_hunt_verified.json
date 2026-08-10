@@ -1,0 +1,26 @@
+{
+  "target": "sky.money",
+  "hunt_date": "2026-08-08",
+  "rpc": "https://ethereum-rpc.publicnode.com",
+  "methodology": "recon (existing) -> identify contracts on-chain -> heuristic surface scan (defihunter simulate, 18 attack types) -> eth_call access-control verification as random attacker -> verdict",
+  "contracts_verified": {
+    "0xE15fcC81118895b67b6647BBd393182dF44E11E0": {"name": "skyMoneyUsdsFlagship", "type": "ERC-4626 vault", "asset": "0xdC035D45d973E3EC169d2276DDab16f1e407384F (USDS)", "totalSupply": "4.402e25", "wards(attacker)": 0},
+    "0x23f5E9c35820f4baB695Ac1F19c203cC3f8e1e11": {"name": "skyMoneyUsdtSavings", "type": "ERC-4626 vault", "note": "identical bytecode to flagship"},
+    "0x56bfa6f53669B836D1E0Dfa5e99706b12c373ecf": {"name": "skyMoneyUsdcRiskCapital", "type": "ERC-4626 vault", "note": "identical bytecode"},
+    "0x2bD3A43863c07B6A01581FADa0E1614ca5DF0E3d": {"name": "skyMoneyUsdtRiskCapital", "type": "ERC-4626 vault", "note": "identical bytecode"},
+    "0x56072C95FAA701256059aa122697B133aDEd9279": {"name": "SKY Governance Token", "type": "DssToken (Maker fork)", "version": "1"}
+  },
+  "heuristic_hits_and_verdicts": [
+    {"attack": "mint", "target": "SKY", "heuristic": "mint(address,uint256) selector 40c10f19 present", "verification": "eth_call mint as 0x1111...1111 -> reverted 'Sky/not-authorized'", "verdict": "FALSE POSITIVE (role-gated)"},
+    {"attack": "admin", "target": "SKY", "heuristic": "rely/deny selectors present", "verification": "wards(attacker)=0; no owner()", "verdict": "FALSE POSITIVE (wards auth)"},
+    {"attack": "permit", "target": "SKY", "heuristic": "EIP-2612 permit present", "verification": "DOMAIN_SEPARATOR()=0xc29a... not reproducible with chainId=0 encoding (tried name/version/chainId matrix)", "verdict": "FALSE POSITIVE (DssToken fork hardcodes chainId)"},
+    {"attack": "inflation", "target": "Flagship vault", "heuristic": "deposit(uint256,address) present", "verification": "totalSupply=4.402e25 -> vault long bootstrapped; first-deposit donation infeasible", "verdict": "FALSE POSITIVE"},
+    {"attack": "withdraw", "target": "Flagship vault", "heuristic": "ERC-4626 redeem/previewRedeem present", "verification": "withdraw requires caller's own shares; standard 4626 surface", "verdict": "FALSE POSITIVE (by-design permissionless self-withdrawal)"},
+    {"attack": "forcesend", "target": "Flagship vault", "heuristic": "totalAssets() present", "verification": "asset()=USDS (ERC-20); ETH force-send cannot inflate totalAssets", "verdict": "FALSE POSITIVE"}
+  ],
+  "corrections_to_prior_scan": {
+    "sky_findings.json": "Prior HIGH findings (first-deposit inflation attack, unprotected admin wards) are REFUTED by on-chain verification: vault supply is bootstrapped and wards-auth is enforced; no unauthenticated attacker path exists."
+  },
+  "final_verdict": "CLEARED — no exploitable vulnerability found via black-box on live Sky contracts. Mature audited protocol; all heuristic surface hits rejected by access-control verification.",
+  "method_note": "Heuristics detect attack SURFACE (selector presence), not exploitability. eth_call-as-attacker verification is mandatory before reporting."
+}

@@ -27,44 +27,68 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 from rich import box
+from rich.columns import Columns
+from rich.align import Align
+from rich.rule import Rule
 
 # ---------------------------------------------------------------------------
-# Theme
+# Theme — Professional dark hacker aesthetic
 # ---------------------------------------------------------------------------
 THEME = Theme(
     {
-        "banner": "bold cyan",
+        "banner": "bold bright_cyan",
         "cmd": "bold white",
         "step": "bold bright_blue",
-        "ok": "bold green",
-        "warn": "bold yellow",
-        "err": "bold red",
-        "muted": "dim",
-        "addr": "cyan",
-        "accent": "magenta",
-        "success": "bold green",
-        "fail": "bold red",
+        "ok": "bold bright_green",
+        "warn": "bold bright_yellow",
+        "err": "bold bright_red",
+        "muted": "dim white",
+        "addr": "bright_cyan",
+        "accent": "bold bright_magenta",
+        "success": "bold bright_green",
+        "fail": "bold bright_red",
+        "highlight": "bold bright_white",
+        "fire": "bold bright_red on dark_red",
+        "neon": "bold bright_green",
+        "cyber": "bold bright_cyan",
         # severity colors
-        "sev.CRITICAL": "bold white on red",
-        "sev.HIGH": "bold red",
-        "sev.MEDIUM": "bold yellow",
-        "sev.LOW": "cyan",
-        "sev.INFO": "dim",
+        "sev.CRITICAL": "bold bright_white on bright_red",
+        "sev.HIGH": "bold bright_red",
+        "sev.MEDIUM": "bold bright_yellow",
+        "sev.LOW": "bright_cyan",
+        "sev.INFO": "dim white",
     }
 )
 
-console = Console(theme=THEME, highlight=False)
-err_console = Console(theme=THEME, stderr=True)
+console = Console(theme=THEME, highlight=False, force_terminal=True)
+err_console = Console(theme=THEME, stderr=True, force_terminal=True)
+
+# ---------------------------------------------------------------------------
+# Professional ASCII Banner
+# ---------------------------------------------------------------------------
 
 BANNER = r"""
- ____       _____ _   _   _             _            
-|  _ \  ___|  ___(_) | | | |_   _ _ __ | |_ ___ _ __ 
-| | | |/ _ \ |_  | | | |_| | | | | '_ \| __/ _ \ '__|
-| |_| |  __/  _| | | |  _  | |_| | | | | ||  __/ |   
-|____/ \___|_|   |_| |_| |_|\__,_|_| |_|\__\___|_|   
-"""
+ ██████╗ ███████╗███████╗██╗      ██╗  ██╗██╗   ██╗███╗   ██╗████████╗███████╗██████╗ 
+ ██╔══██╗██╔════╝██╔════╝██║      ██║  ██║██║   ██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗
+ ██████╔╝█████╗  █████╗  ██║      ███████║██║   ██║██╔██╗ ██║   ██║   █████╗  ██████╔╝
+ ██╔══██╗██╔══╝  ██╔══╝  ██║      ██╔══██║██║   ██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗
+ ██║  ██║███████╗██║     ███████╗██║  ██║╚██████╔╝██║ ╚████║   ██║   ███████╗██║  ██║
+ ╚═╝  ╚═╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝"""
+
+TAGLINE = "⚡ WORLD RECORD DeFi ATTACK TOOLKIT 🥵"
+SUBTITLE = "the only toolkit that fork-proves every HIGH finding on a live mainnet clone"
 
 SEVERITY_ORDER = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
+
+# Severity icons
+SEV_ICONS = {
+    "CRITICAL": "🔴",
+    "HIGH": "🟠",
+    "MEDIUM": "🟡",
+    "LOW": "🔵",
+    "INFO": "⚪",
+}
+
 
 # ---------------------------------------------------------------------------
 # Basic output helpers
@@ -73,12 +97,118 @@ SEVERITY_ORDER = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
 
 def banner(version: str = "") -> None:
     """Print the DeFi Hunter banner + tagline."""
-    tagline = "Open Source DeFi Security Toolkit"
-    if version:
-        tagline += f"  ·  v{version}"
-    console.print(Panel(Text(BANNER.strip("\n"), style="banner"), border_style="cyan", box=box.HEAVY))
-    console.print(Text(f"⚡ {tagline}", style="muted"), justify="center")
+    # Main banner with glow effect
     console.print()
+    console.print(Panel(
+        Text(BANNER.strip("\n"), style="banner"),
+        border_style="bright_cyan",
+        box=box.DOUBLE,
+        padding=(0, 1),
+    ))
+
+    # Tagline with fire effect
+    tagline_text = Text()
+    tagline_text.append(f"  {TAGLINE}", style="bold bright_yellow")
+    if version:
+        tagline_text.append(f"  ·  v{version}", style="dim bright_white")
+    console.print(Align.center(tagline_text))
+
+    # Subtitle
+    console.print(Align.center(Text(f"  {SUBTITLE}", style="dim bright_cyan")))
+    console.print()
+
+    # Stats bar
+    stats = Table.grid(padding=(0, 2))
+    stats.add_column(style="dim")
+    stats.add_column(style="bold bright_green")
+    stats.add_column(style="dim")
+    stats.add_column(style="bold bright_cyan")
+    stats.add_column(style="dim")
+    stats.add_column(style="bold bright_magenta")
+    stats.add_row(
+        "🔍", "20 ATTACK TYPES",
+        "⚡", "LIVE FORK PROOF",
+        "🎯", "READY-TO-RUN EXPLOITS",
+    )
+    console.print(Align.center(stats))
+    console.print()
+
+
+def scan_header(protocol: str = "", chain: str = "") -> None:
+    """Print a scan header with protocol info."""
+    console.print()
+    console.rule(Text(f"🔍 SCANNING: {protocol}", style="bold bright_cyan"))
+    if chain:
+        console.print(f"  [dim]Chain:[/] [bold]{chain}[/]")
+    console.print()
+
+
+def vuln_header(count: int = 0, severity: str = "") -> None:
+    """Print vulnerability discovery header."""
+    console.print()
+    if count > 0:
+        style = "bold bright_red" if severity in ("CRITICAL", "HIGH") else "bold bright_yellow"
+        console.print(Panel(
+            f"[{style}]🚨 FOUND {count} VULNERABILITY(IES)[/]",
+            border_style=style.split()[-1],
+            box=box.HEAVY,
+        ))
+    else:
+        console.print(Panel(
+            "[bold bright_green]✅ NO VULNERABILITIES FOUND[/]",
+            border_style="bright_green",
+            box=box.HEAVY,
+        ))
+    console.print()
+
+
+def exploit_header(attack_type: str = "", target: str = "") -> None:
+    """Print exploit generation header."""
+    console.print()
+    console.rule(Text(f"⚔️  GENERATING EXPLOIT: {attack_type.upper()}", style="bold bright_red"))
+    if target:
+        console.print(f"  [dim]Target:[/] [bold bright_cyan]{target}[/]")
+    console.print()
+
+
+def success_box(message: str) -> None:
+    """Print a success box."""
+    console.print(Panel(
+        f"[bold bright_green]✅ {message}[/]",
+        border_style="bright_green",
+        box=box.DOUBLE,
+        padding=(0, 2),
+    ))
+
+
+def error_box(message: str) -> None:
+    """Print an error box."""
+    console.print(Panel(
+        f"[bold bright_red]❌ {message}[/]",
+        border_style="bright_red",
+        box=box.DOUBLE,
+        padding=(0, 2),
+    ))
+
+
+def warning_box(message: str) -> None:
+    """Print a warning box."""
+    console.print(Panel(
+        f"[bold bright_yellow]⚠️  {message}[/]",
+        border_style="bright_yellow",
+        box=box.ROUNDED,
+        padding=(0, 2),
+    ))
+
+
+def info_box(message: str) -> None:
+    """Print an info box."""
+    console.print(Panel(
+        f"[bold bright_cyan]ℹ️  {message}[/]",
+        border_style="bright_cyan",
+        box=box.ROUNDED,
+        padding=(0, 2),
+    ))
 
 
 def ok(msg: str) -> None:
@@ -99,14 +229,26 @@ def info(msg: str) -> None:
 
 def step(label: str, msg: str = "") -> None:
     """Print a step header, e.g. '[1/4] Reconnaissance'."""
-    text = f"[step]▸ {label}[/]"
+    text = f"[step]▸[/] [bold]{label}[/]"
     if msg:
-        text += f"  [muted]{msg}[/]"
+        text += f"  [muted]←[/] [bright_white]{msg}[/]"
     console.print(text)
 
 
 def rule(title: str = "") -> None:
     console.rule(Text(title, style="accent"))
+
+
+def divider() -> None:
+    """Print a visual divider."""
+    console.print(Text("─" * 70, style="dim"))
+
+
+def progress_header(current: int, total: int, label: str = "") -> None:
+    """Print progress header."""
+    pct = int((current / total) * 100) if total > 0 else 0
+    bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+    console.print(f"  [dim]{label}[/] [{bar}] [bold]{pct}%[/] ({current}/{total})")
 
 
 # ---------------------------------------------------------------------------

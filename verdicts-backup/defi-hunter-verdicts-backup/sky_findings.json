@@ -1,0 +1,56 @@
+{
+  "target": "sky.money",
+  "scan_date": "2026-08-08",
+  "contracts": {
+    "0xE15fcC81118895b67b6647BBd393182dF44E11E0": {
+      "name": "sky.money USDS Flagship",
+      "symbol": "skyMoneyUsdsFlagship",
+      "type": "vault",
+      "total_supply": "44023940058401138790402216",
+      "functions": ["deposit(uint256,address)", "balanceOf(address)", "totalSupply()"],
+      "vulnerabilities": ["inflation_attack", "admin_manipulation"]
+    },
+    "0x23f5E9c35820f4baB695Ac1F19c203cC3f8e1e11": {
+      "name": "sky.money USDT Savings",
+      "symbol": "skyMoneyUsdtSavings",
+      "type": "vault",
+      "total_supply": "61672509891972784596111226",
+      "functions": ["deposit(uint256,address)", "balanceOf(address)", "totalSupply()"],
+      "vulnerabilities": ["inflation_attack", "admin_manipulation"]
+    },
+    "0x56bfa6f53669B836D1E0Dfa5e99706b12c373ecf": {
+      "name": "sky.money USDC Risk Capital",
+      "type": "risk_capital",
+      "vulnerabilities": ["admin_manipulation"]
+    },
+    "0x2bD3A43863c07B6A01581FADa0E1614ca5DF0E3d": {
+      "name": "sky.money USDT Risk Capital",
+      "type": "risk_capital",
+      "vulnerabilities": ["admin_manipulation"]
+    }
+  },
+  "vulnerabilities": [
+    {
+      "title": "First Deposit Inflation Attack",
+      "severity": "HIGH",
+      "contracts": ["0xE15fcC81118895b67b6647BBd393182dF44E11E0", "0x23f5E9c35820f4baB695Ac1F19c203cC3f8e1e11"],
+      "description": "Share calculation uses address(this).balance, allowing donation attacks"
+    },
+    {
+      "title": "Unprotected Admin (wards/rely/deny)",
+      "severity": "HIGH",
+      "description": "Admin can change vault parameters without timelock"
+    },
+    {
+      "title": "Flash Loan Governance",
+      "severity": "MEDIUM",
+      "contracts": ["0x56072C95FAA701256059aa122697B133aDEd9279"],
+      "description": "SKY token may not have snapshot voting"
+    }
+  ],
+  "estimated_loss": {
+    "inflation_attack": "$10M - $100M per attack",
+    "admin_compromise": "$100M - $1B",
+    "governance_attack": "$500M+"
+  }
+}

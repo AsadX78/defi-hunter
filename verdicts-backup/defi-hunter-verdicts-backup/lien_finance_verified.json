@@ -1,0 +1,42 @@
+{
+  "target": "lien.finance (BondMaker + GeneralizedDotc OTC pools, Ethereum mainnet)",
+  "hunt_date": "2026-08-09",
+  "rpc": "https://eth.drpc.org (archive fork), https://ethereum-rpc.publicnode.com (head)",
+  "methodology": "forensics of real exploit (tx 0xb96d572b..., block 25599302, ~542K USDC) -> source pull (LienFinance/bondmaker) -> on-chain group/bond enumeration -> replay of the full 5-tx attacker sequence on anvil fork at block 25599301 with debug_traceTransaction (callTracer) -> drain confirmed -> writeup",
+  "exploit_reference": {
+    "tx": "0xb96d572b557a12f5ef193e88cca86123a6ae1b6e98b0eeee265870c85848e0e7",
+    "block": 25599302,
+    "attacker_eoa": "0x0d7d9023531ad1a88414e216ee2715f63561808a",
+    "orchestration": "0xe74d17c1bE3721E65e0af286D47B3BA58B08062e",
+    "drained_usdc": 542144628604,
+    "stage_calls": {"deploy": "CREATE nonce0", "1": "0xb67d3eef (register 3 ETH bonds)", "2": "0x973de16c (register 3 ERC20 bonds)", "3": "0x808f4a48 (register LBT/SBT pair)", "4": "0xa5514ef8 (groups, exchanges, pool sells, sweep)"}
+  },
+  "contracts_verified": {
+    "0xDA6FC5625E617bB92F5359921D43321cEbC6BEf0": {"name": "BondMaker (ETH)", "has_exchangeEquivalentBonds": true, "has_registerNewBondGroup": true},
+    "0x843225CF6e663e4454732D6B551A737Ac7b47de0": {"name": "BondMaker (ERC20/USDC)", "has_exchangeEquivalentBonds": true, "has_registerNewBondGroup": true, "note": "deployed version differs from repo main: issueNewBonds(uint256,uint256) selector 125d8583 NOT in bytecode"},
+    "0x656e5e976d523a427f05b0c212a22a89ccd9ef18": {"name": "GeneralizedDotc pool 1", "drained_to_zero": true},
+    "0x7db84492cfd27e47c39499d852decc2a01476a75": {"name": "GeneralizedDotc pool 2", "drained_to_zero": true},
+    "0xa961684a3a654fb2cca8f8991226c0cefc514d80": {"name": "LP / allowance holder", "usdc_balance_after": 25133827237}
+  },
+  "root_cause": [
+    "Duplicate bond IDs in registered bond groups pass _assertBondGroup value checks and are minted multiple times by exchangeEquivalentBonds, creating uncollateralized bonds",
+    "_checkExceptionBonds is an aggregate occurrence-count check (count == exceptionBonds.length), not a multiset/coverage check — exceptions that do not cover the input group still pass, skipping required burns",
+    "_calcRateBondToErc20 prices strike-0 IMT/LBT bonds at full collateral value; GeneralizedDotc pools pay USDC from LP standing allowance"
+  ],
+  "replay_result": {
+    "fork": "anvil --fork-url https://eth.drpc.org --fork-block-number 25599301 --port 8547",
+    "all_5_txs_status": "0x1 (success)",
+    "attacker_usdc_final": 542144628604,
+    "matches_real_drain": true,
+    "trace_file": "/tmp/exploit_trace.json"
+  },
+  "key_primitives": [
+    "registerNewBondGroup(bytes32[],uint256) 0xe59455e0",
+    "exchangeEquivalentBonds(uint256,uint256,uint256,bytes32[]) 0x529aa16b",
+    "registerNewBond(uint256,bytes) 0x7369bcaa",
+    "ERC20 BM malicious group5 = [0x306a2880..., 0x58e11d7e..., 0x58e11d7e..., 0x303ac230...] (dup 0x58e11d7e x2)",
+    "ETH BM malicious group37 = [0xb14ded15..., 0x7be16973..., 0x7be16973...] (dup 0x7be16973 x2)"
+  ],
+  "final_verdict": "VULNERABLE (reproduced) — the deployed BondMaker/GeneralizedDotc code is exploitable exactly as the 2026-07-24 attacker did; full drain (542,144.63 USDC) reproduced on a forked chain at the pre-exploit block. Protocols remain live/unpatched on mainnet (no pause circuitry).",
+  "method_note": "Selector-grep heuristics flagged only generic mint/transfer surfaces; the real vulnerability (logic/accounting bypass) required replaying the actual exploit with a state-machine orchestration on an archive fork. This is a strong validation target for the defihunter toolkit's replay capability."
+}
