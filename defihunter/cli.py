@@ -16,7 +16,7 @@ from defihunter.core.reporter import ReportGenerator
 from defihunter.core.config import load_config
 from defihunter import ui
 
-__version__ = "1.3.31"
+__version__ = "1.4.0"
 
 
 def _banner():
@@ -295,8 +295,12 @@ def repo(ctx, target, rpc, as_json, no_fork):
 @click.option('--target', '-t', required=True,
               help='Contract address (0x…) or GitHub repo URL')
 @click.option('--rpc', '-r', envvar='RPC_URL', help='Mainnet RPC URL for fork verification')
+@click.option('--chain', '-c', default=None,
+              help='Target chain (ethereum, bsc, polygon, arbitrum, etc.)')
 @click.option('--output', '-o', default='defihunter-scan.json',
               help='JSON report path (default defihunter-scan.json)')
+@click.option('--format', '-f', type=click.Choice(['json', 'html', 'markdown']),
+              default='json', help='Report format (default: json)')
 @click.option('--no-fork', is_flag=True, help='Skip fork verification')
 @click.option('--attacker', help='EOA that signs the fork proof txs '
               '(prompted at scan start if missing; default anvil dev 0x3C44…)')
@@ -306,7 +310,7 @@ def repo(ctx, target, rpc, as_json, no_fork):
               default='high', show_default=True,
               help='Exit code threshold: none=never fail, high=fail on any '
                    'CONFIRMED high/critical, critical=fail only on CONFIRMED critical')
-def scan(target, rpc, output, no_fork, fail_on, attacker, profit_wallet):
+def scan(target, rpc, chain, output, format, no_fork, fail_on, attacker, profit_wallet):
     """CI-friendly one-shot scan: static analysis + ABI-aware fork proof.
 
     Every finding gets a verdict after fork verification:
@@ -316,16 +320,30 @@ def scan(target, rpc, output, no_fork, fail_on, attacker, profit_wallet):
                    reverted → NOT callable, removed from the confirmed set
       UNVERIFIED — no ABI/address to prove either way (stays as static only)
 
-    Exits 0 when no confirmed finding meets --fail-on, 1 otherwise. JSON
-    report written to --output. This is the command to wire into CI.
+    Exits 0 when no confirmed finding meets --fail-on, 1 otherwise. Report
+    written to --output in --format. This is the command to wire into CI.
     """
     from defihunter.core.analyzer import analyze_repo_dir
     from defihunter.core.github import clone, extract_addresses
     from defihunter.wizard import _run_fork_verify, resolve_wallets, is_eoa
+    from defihunter.core.chains import get_chain, detect_chain_from_rpc
     from datetime import datetime as _dt
+
+    # Resolve chain/RPC
+    if chain:
+        chain_info = get_chain(chain)
+        rpc_url = rpc or chain_info.rpc_url
+    elif rpc:
+        detected = detect_chain_from_rpc(rpc)
+        chain_info = get_chain(detected or "ethereum")
+        rpc_url = rpc
+    else:
+        chain_info = get_chain("ethereum")
+        rpc_url = rpc or chain_info.rpc_url
 
     ui.rule("SCAN")
     ui.step("Target", target)
+    ui.step("Chain", chain_info.name)
 
     # wallet config: validate flags, then prompt for anything missing at the
     # START of the session (silently skipped on non-TTY / --no-fork)
@@ -344,7 +362,7 @@ def scan(target, rpc, output, no_fork, fail_on, attacker, profit_wallet):
     contracts: dict = {}
     if is_addr:
         ui.info("Target is an address — fetching verified source + ABI from Etherscan")
-        analyzer = ContractAnalyzer(rpc_url=rpc)
+        analyzer = ContractAnalyzer(rpc_url=rpc_url)
         with ui.spinner("Fetching + analyzing verified source"):
             findings = analyzer.analyze(target)
         if not findings:
@@ -369,7 +387,7 @@ def scan(target, rpc, output, no_fork, fail_on, attacker, profit_wallet):
     if findings and not no_fork:
         if is_addr:
             contracts = {target: {"address": target, "sources": []}}
-        fork_results = _run_fork_verify(findings, contracts, rpc,
+        fork_results = _run_fork_verify(findings, contracts, rpc_url,
                                         repo_dir=repo_dir,
                                         attacker=attacker,
                                         profit_wallet=profit_wallet)
@@ -383,6 +401,8 @@ def scan(target, rpc, output, no_fork, fail_on, attacker, profit_wallet):
         "version": __version__,
         "generated_at": _dt.utcnow().isoformat() + "Z",
         "target": target,
+        "chain": chain_info.name,
+        "chain_id": chain_info.chain_id,
         "static_findings": findings,
         "fork_proofs": fork_results,
         "verdicts": {
@@ -399,6 +419,14 @@ def scan(target, rpc, output, no_fork, fail_on, attacker, profit_wallet):
     }
     Path(output).write_text(json.dumps(report, indent=2))
     ui.ok(f"Report written: {output}")
+
+    # Generate professional report if requested
+    if format != "json":
+        from defihunter.core.reporter import ReportGenerator
+        gen = ReportGenerator()
+        report_file = output.rsplit(".", 1)[0] + ("." + format if format != "markdown" else ".md")
+        gen.generate(report, format=format, output=report_file)
+        ui.ok(f"Professional report: {report_file}")
 
     if not fork_results:
         ui.info("No fork verification ran (--no-fork, no RPC, or no attack "
@@ -474,21 +502,59 @@ def simulate(ctx):
 
 
 @simulate.command()
-@click.option('--attack', '-a', type=click.Choice(['inflation', 'admin', 'governance', 'oracle', 'reentrancy', 'bridge', 'sandwich', 'twap', 'flashloan', 'withdraw', 'initialize', 'permit', 'liquidation', 'forcesend', 'peg', 'crossfunc', 'delegatecall', 'mint']), required=True)
+@click.option('--attack', '-a', type=click.Choice([
+    'inflation', 'admin', 'governance', 'oracle', 'reentrancy', 'bridge',
+    'sandwich', 'twap', 'flashloan', 'withdraw', 'initialize', 'permit',
+    'liquidation', 'forcesend', 'peg', 'crossfunc', 'delegatecall', 'mint',
+    'arbitrarycall', 'selfdestruct', 'approve',
+]), required=True)
 @click.option('--target', '-t', required=True, help='Target contract address')
 @click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL')
+@click.option('--chain', '-c', default=None, help='Chain (auto-detects RPC if not set)')
 @click.option('--block', '-b', type=int, help='Fork block number')
+@click.option('--format', '-f', type=click.Choice(['json', 'text']), default='text',
+              help='Output format')
 @click.pass_context
-def run(ctx, attack, target, rpc, block):
-    """Run attack simulation"""
-    simulator = AttackSimulator(rpc_url=rpc, block=block)
+def run(ctx, attack, target, rpc, chain, block, format):
+    """Run attack simulation on a real fork"""
+    from defihunter.core.chains import get_chain, detect_chain_from_rpc
+    from defihunter.core.simulator import ForkSimulator
+
+    # Resolve chain/RPC
+    if chain:
+        chain_info = get_chain(chain)
+        rpc_url = rpc or chain_info.rpc_url
+    elif rpc:
+        detected = detect_chain_from_rpc(rpc)
+        chain_info = get_chain(detected or "ethereum")
+        rpc_url = rpc
+    else:
+        chain_info = get_chain("ethereum")
+        rpc_url = chain_info.rpc_url
 
     ui.rule("SIMULATE")
-    ui.step(f"Attack {attack}", target)
-    with ui.spinner(f"Simulating {attack} attack"):
-        result = simulator.run(attack, target)
+    ui.step(f"Attack", attack)
+    ui.step("Target", target)
+    ui.step("Chain", chain_info.name)
 
-    ui.console.print(ui.attack_summary(result, attack, target))
+    # Try ForkSimulator first (real fork verification)
+    with ui.spinner(f"Running {attack} on {chain_info.name} fork"):
+        try:
+            with ForkSimulator(rpc_url=rpc_url, block=block) as fork:
+                if fork.available:
+                    result = fork.run(attack, target)
+                else:
+                    # Fallback to AttackSimulator (static analysis)
+                    simulator = AttackSimulator(rpc_url=rpc_url, block=block)
+                    result = simulator.run(attack, target)
+        except Exception:
+            simulator = AttackSimulator(rpc_url=rpc_url, block=block)
+            result = simulator.run(attack, target)
+
+    if format == "json":
+        print(json.dumps(result, indent=2))
+    else:
+        ui.console.print(ui.attack_summary(result, attack, target))
 
 
 @cli.command()
@@ -496,7 +562,7 @@ def run(ctx, attack, target, rpc, block):
 @click.option('--output', '-o', required=True, help='Output file')
 @click.option('--format', '-f', type=click.Choice(['html', 'json', 'markdown']), default='html')
 def report(input, output, format):
-    """Generate report from findings"""
+    """Generate professional security assessment report"""
     gen = ReportGenerator()
 
     findings = json.loads(Path(input).read_text())
@@ -506,6 +572,175 @@ def report(input, output, format):
         report_path = gen.generate(findings, format=format, output=output)
 
     ui.ok(f"Report saved to {report_path}")
+
+
+@cli.group()
+def chains():
+    """List and manage supported blockchain networks"""
+    pass
+
+
+@chains.command('list')
+def chains_list():
+    """Show all supported chains with RPC endpoints"""
+    from defihunter.core.chains import CHAINS, list_chains
+    from rich.table import Table
+    from rich import box as _box
+
+    ui.rule("SUPPORTED CHAINS")
+    table = Table(box=_box.ROUNDED, border_style="cyan",
+                  header_style="bold cyan", expand=True)
+    table.add_column("Chain", style="bold white")
+    table.add_column("ID", justify="right")
+    table.add_column("Native", justify="center")
+    table.add_column("Block Time", justify="center")
+    table.add_column("Explorer", overflow="fold")
+
+    for name in list_chains():
+        info = CHAINS[name]
+        table.add_row(
+            info.name,
+            str(info.chain_id),
+            info.native_token,
+            f"{info.block_time}s",
+            info.explorer_url,
+        )
+    ui.console.print(table)
+    ui.console.print()
+    ui.ok(f"{len(CHAINS)} chains supported")
+
+
+@chains.command('detect')
+@click.argument('rpc_url')
+def chains_detect(rpc_url):
+    """Detect which chain an RPC URL points to"""
+    from defihunter.core.chains import detect_chain_from_rpc, get_chain
+
+    chain_name = detect_chain_from_rpc(rpc_url)
+    if chain_name:
+        info = get_chain(chain_name)
+        ui.ok(f"Detected: {info.name} (chain_id={info.chain_id})")
+    else:
+        ui.warn("Could not detect chain from RPC URL")
+
+
+@cli.command()
+@click.option('--targets', '-t', required=True,
+              help='Comma-separated contract addresses or repo URLs')
+@click.option('--chain', '-c', default='ethereum',
+              help='Target chain (ethereum, bsc, polygon, arbitrum, etc.)')
+@click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL (overrides chain default)')
+@click.option('--attacks', '-a', default='all',
+              help='Comma-separated attack types, or "all" (default: all)')
+@click.option('--output-dir', '-o', default='output/batch',
+              help='Output directory for reports')
+@click.option('--format', '-f', type=click.Choice(['html', 'json', 'markdown']),
+              default='html', help='Report format (default: html)')
+@click.option('--no-fork', is_flag=True, help='Skip fork verification')
+def batch(targets, chain, rpc, attacks, output_dir, format, no_fork):
+    """Batch scan multiple targets with professional reports"""
+    from defihunter.core.chains import get_chain
+    from defihunter.core.simulator import ForkSimulator
+    from defihunter.core.analyzer import ContractAnalyzer
+    from defihunter.core.reporter import ReportGenerator
+    from datetime import datetime as _dt
+
+    target_list = [t.strip() for t in targets.split(',') if t.strip()]
+    chain_info = get_chain(chain)
+    rpc_url = rpc or chain_info.rpc_url
+
+    ui.rule("BATCH SCAN")
+    ui.step("Targets", str(len(target_list)))
+    ui.step("Chain", chain_info.name)
+    ui.step("Format", format)
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    all_results = []
+    progress, task = ui.progress_bar(len(target_list), "Scanning targets")
+    with progress:
+        for target in target_list:
+            ui.info(f"Scanning: {target}")
+            result = {"target": target, "chain": chain, "vulnerabilities": [],
+                      "contracts": {}, "scan_time": _dt.now().isoformat(),
+                      "tool_version": __version__}
+
+            # Static analysis
+            is_addr = target.lower().startswith("0x")
+            findings = []
+            if is_addr:
+                analyzer = ContractAnalyzer(rpc_url=rpc_url)
+                findings = analyzer.analyze(target)
+                result["contracts"][target] = {"name": "Unknown", "code_size": 0}
+            else:
+                try:
+                    from defihunter.core.analyzer import analyze_repo_dir
+                    from defihunter.core.github import clone, extract_addresses
+                    repo_dir = clone(target)
+                    findings = analyze_repo_dir(str(repo_dir), repo_label=target)
+                    contracts = {addr: info for addr, info
+                                 in extract_addresses(repo_dir).items()}
+                    result["contracts"] = contracts
+                except Exception as e:
+                    ui.warn(f"Failed to clone/analyze {target}: {e}")
+
+            result["vulnerabilities"] = findings
+
+            # Fork verification
+            if not no_fork and is_addr and rpc_url:
+                try:
+                    with ForkSimulator(rpc_url=rpc_url) as fork:
+                        if fork.available:
+                            attack_types = (["mint", "initialize", "reentrancy",
+                                            "approve", "delegatecall", "selfdestruct",
+                                            "oracle", "flashloan", "governance",
+                                            "bridge", "twap", "crossfunc", "permit",
+                                            "liquidation", "forcesend", "peg"]
+                                           if attacks == "all"
+                                           else [a.strip() for a in attacks.split(",")])
+                            for atype in attack_types:
+                                r = fork.run(atype, target)
+                                if r.get("success"):
+                                    result["vulnerabilities"].append({
+                                        "severity": "CRITICAL",
+                                        "title": f"Fork-confirmed {atype}",
+                                        "attack": atype,
+                                        "evidence": r.get("evidence", ""),
+                                        "steps": r.get("steps", []),
+                                        "description": r.get("profit", ""),
+                                    })
+                except Exception as e:
+                    ui.warn(f"Fork verification failed for {target}: {e}")
+
+            all_results.append(result)
+
+            # Generate individual report
+            report_file = out_dir / f"{target[:20]}_{_dt.now().strftime('%Y%m%d_%H%M%S')}.{format if format != 'markdown' else 'md'}"
+            gen = ReportGenerator()
+            gen.generate(result, format=format, output=str(report_file))
+            ui.ok(f"Report: {report_file}")
+
+            progress.advance(task)
+
+    # Summary
+    total_vulns = sum(len(r.get("vulnerabilities", [])) for r in all_results)
+    critical = sum(1 for r in all_results
+                   for v in r.get("vulnerabilities", [])
+                   if v.get("severity") == "CRITICAL")
+    high = sum(1 for r in all_results
+               for v in r.get("vulnerabilities", [])
+               if v.get("severity") == "HIGH")
+
+    ui.console.print()
+    ui.console.print(ui.summary_panel([
+        ("targets scanned", str(len(target_list))),
+        ("total findings", str(total_vulns)),
+        ("critical", str(critical)),
+        ("high", str(high)),
+        ("reports", str(out_dir)),
+    ]))
+    ui.ok(f"Batch scan complete: {len(target_list)} targets, {total_vulns} findings")
 
 
 @cli.group()

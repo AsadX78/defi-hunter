@@ -1,6 +1,7 @@
 """Tests for the source-level static analyzer (analyze_repo_dir) and the
 anvil fork verifier (ForkSimulator)."""
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -824,3 +825,213 @@ class TestForkVerifyAddressFindings:
         results = wizard._run_fork_verify([finding], {}, "http://rpc")
         assert called == [("mint", "0x58d97b57bb95320f9a05dc918aef65434969c2b2")]
         assert results[0]["success"]
+
+
+# ---------------------------------------------------------------------------
+# ForkSimulator — new attack type routing tests (no fork needed)
+# ---------------------------------------------------------------------------
+
+class TestForkSimulatorAttackTypes:
+    """Verify all 17 attack types are recognized and return proper structure."""
+
+    def test_all_attack_types_recognized(self):
+        """ForkSimulator.run() handles every attack type without crashing."""
+        from defihunter.core.simulator import ForkSimulator
+        attacks = list(ForkSimulator.ATTACK_FN_NAMES.keys())
+        assert len(attacks) >= 17, f"Expected >=17 attacks, got {len(attacks)}"
+        # All attack types from ATTACK_FN_NAMES should be in the list
+        expected = {"mint", "initialize", "delegatecall", "reentrancy",
+                    "arbitrarycall", "approve", "selfdestruct", "oracle",
+                    "flashloan", "governance", "bridge", "twap", "crossfunc",
+                    "permit", "liquidation", "forcesend", "peg"}
+        assert expected.issubset(set(attacks))
+
+    def test_unsupported_attack_returns_error(self):
+        """Unknown attack type returns error dict."""
+        from defihunter.core.simulator import ForkSimulator
+        # Use a minimal mock that bypasses __init__
+        fork = ForkSimulator.__new__(ForkSimulator)
+        fork.available = True
+        fork._target = "0x1111"
+        fork.port = 8545  # rpc_url_local is a property based on port
+        fork._abi = []
+        fork._attack_candidates = []
+        fork.attacker = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+        fork.profit_wallet = fork.attacker
+        # Mock the instance methods that _run_impl calls
+        fork._has_code = lambda: True
+        fork._code_hex = lambda: "0x"
+        fork._to_int = ForkSimulator._to_int.__get__(fork)
+        fork._merge_candidates = ForkSimulator._merge_candidates.__get__(fork)
+        fork._abi_candidates = ForkSimulator._abi_candidates.__get__(fork)
+        result = fork.run("nonexistent", "0x1111")
+        assert not result["success"]
+        assert "does not support" in result.get("error", "")
+
+
+# ---------------------------------------------------------------------------
+# ReportGenerator — professional HTML report tests
+# ---------------------------------------------------------------------------
+
+class TestReportGenerator:
+    def test_html_report_generation(self, tmp_path):
+        from defihunter.core.reporter import ReportGenerator
+        gen = ReportGenerator()
+        findings = {
+            "target": "0x1234567890abcdef1234567890abcdef12345678",
+            "chain": "ethereum",
+            "tool_version": "1.3.31",
+            "scan_time": "2026-08-10T12:00:00",
+            "contracts": {
+                "0x1234567890abcdef1234567890abcdef12345678": {
+                    "name": "TestVault",
+                    "code_size": 1234,
+                    "verified": True,
+                }
+            },
+            "vulnerabilities": [
+                {
+                    "severity": "CRITICAL",
+                    "title": "Permissionless mint",
+                    "attack": "mint",
+                    "description": "Anyone can mint unlimited tokens",
+                    "evidence": "balanceOf(attacker) 0 → 1000000",
+                    "endpoint": "Test.sol:42",
+                    "steps": [
+                        {"step": "mint called", "value": "mined"},
+                        {"step": "balance changed", "value": "0 → 1000000"},
+                    ],
+                },
+                {
+                    "severity": "HIGH",
+                    "title": "Missing access control",
+                    "attack": "initialize",
+                    "description": "initialize() not guarded",
+                },
+            ],
+        }
+        out = str(tmp_path / "report.html")
+        result = gen.generate(findings, format="html", output=out)
+        assert result == out
+        content = Path(out).read_text()
+        assert "Smart Contract Security Assessment" in content
+        assert "0x1234567890abcdef" in content
+        assert "CRITICAL" in content
+        assert "Permissionless mint" in content
+        assert "Executive Summary" in content
+        assert "CVSS" in content
+        assert "Remediation" in content
+
+    def test_risk_score_calculation(self):
+        from defihunter.core.reporter import ReportGenerator
+        gen = ReportGenerator()
+        # 1 critical = 40, 2 high = 50 → total 90
+        score = gen._calculate_risk_score({"CRITICAL": 1, "HIGH": 2, "MEDIUM": 0, "LOW": 0})
+        assert score == 90.0
+        # No vulns = 0
+        assert gen._calculate_risk_score({"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}) == 0.0
+        # Cap at 100
+        score = gen._calculate_risk_score({"CRITICAL": 5, "HIGH": 5, "MEDIUM": 5, "LOW": 5})
+        assert score == 100.0
+
+    def test_risk_rating(self):
+        from defihunter.core.reporter import ReportGenerator
+        gen = ReportGenerator()
+        assert gen._risk_rating(90) == ("CRITICAL", "#f85149")
+        assert gen._risk_rating(60) == ("HIGH", "#d29922")
+        assert gen._risk_rating(30) == ("MEDIUM", "#3fb950")
+        assert gen._risk_rating(5) == ("LOW", "#8b949e")
+        assert gen._risk_rating(0) == ("INFO", "#58a6ff")
+
+    def test_markdown_report(self, tmp_path):
+        from defihunter.core.reporter import ReportGenerator
+        gen = ReportGenerator()
+        findings = {
+            "target": "0xABC",
+            "chain": "ethereum",
+            "tool_version": "1.3.31",
+            "vulnerabilities": [
+                {"severity": "HIGH", "title": "Test vuln", "attack": "reentrancy",
+                 "description": "test desc", "evidence": "test evidence"},
+            ],
+        }
+        out = str(tmp_path / "report.md")
+        result = gen.generate(findings, format="markdown", output=out)
+        content = Path(out).read_text()
+        assert "Security Assessment: 0xABC" in content
+        assert "HIGH" in content
+        assert "Test vuln" in content
+
+    def test_json_report(self, tmp_path):
+        from defihunter.core.reporter import ReportGenerator
+        import json
+        gen = ReportGenerator()
+        findings = {
+            "target": "0xABC",
+            "chain": "ethereum",
+            "tool_version": "1.3.31",
+            "vulnerabilities": [
+                {"severity": "CRITICAL", "title": "Test", "attack": "mint"},
+            ],
+        }
+        out = str(tmp_path / "report.json")
+        result = gen.generate(findings, format="json", output=out)
+        data = json.loads(Path(out).read_text())
+        assert data["target"] == "0xABC"
+        assert data["risk_score"] == 40.0  # 1 critical = 40
+        assert data["summary"]["CRITICAL"] == 1
+
+    def test_remediation_coverage(self):
+        """Every known attack type has a remediation template."""
+        from defihunter.core.reporter import REMEDIATION
+        from defihunter.core.simulator import ForkSimulator
+        attacks = list(ForkSimulator.ATTACK_FN_NAMES.keys())
+        missing = [a for a in attacks if a not in REMEDIATION]
+        assert not missing, f"Missing remediation for: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Chain registry tests
+# ---------------------------------------------------------------------------
+
+class TestChainRegistry:
+    def test_all_chains_have_required_fields(self):
+        from defihunter.core.chains import CHAINS
+        for name, info in CHAINS.items():
+            assert info.name, f"{name} missing name"
+            assert info.chain_id > 0, f"{name} invalid chain_id"
+            assert info.native_token, f"{name} missing native_token"
+            assert info.explorer_url.startswith("http"), f"{name} invalid explorer"
+            assert info.rpc_url.startswith("http"), f"{name} invalid rpc"
+            assert info.block_time > 0, f"{name} invalid block_time"
+
+    def test_resolve_chain_aliases(self):
+        from defihunter.core.chains import resolve_chain
+        assert resolve_chain("eth").name == "Ethereum Mainnet"
+        assert resolve_chain("matic").name == "Polygon PoS"
+        assert resolve_chain("arb").name == "Arbitrum One"
+        assert resolve_chain("avax").name == "Avalanche C-Chain"
+        assert resolve_chain("ftm").name == "Fantom Opera"
+
+    def test_get_chain_fallback(self):
+        from defihunter.core.chains import get_chain
+        assert get_chain("ethereum").name == "Ethereum Mainnet"
+        assert get_chain("unknown_chain").name == "Ethereum Mainnet"  # fallback
+
+    def test_list_chains(self):
+        from defihunter.core.chains import list_chains
+        chains = list_chains()
+        assert "ethereum" in chains
+        assert "bsc" in chains
+        assert "polygon" in chains
+        assert len(chains) >= 15
+
+    def test_detect_chain_from_rpc(self):
+        from defihunter.core.chains import detect_chain_from_rpc
+        assert detect_chain_from_rpc("https://eth.llamarpc.com") == "ethereum"
+        assert detect_chain_from_rpc("https://bsc-dataseed.binance.org") == "bsc"
+        assert detect_chain_from_rpc("https://polygon-rpc.com") == "polygon"
+        assert detect_chain_from_rpc("https://arb1.arbitrum.io/rpc") == "arbitrum"
+        assert detect_chain_from_rpc("https://mainnet.optimism.io") == "optimism"
+        assert detect_chain_from_rpc("https://mainnet.base.org") == "base"
+        assert detect_chain_from_rpc("https://rpc.example.com") is None

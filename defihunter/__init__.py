@@ -17,5 +17,5 @@ License: MIT
 Version: 1.3.31
 """
 
-__version__ = "1.3.31"
+__version__ = "1.4.0"
 __author__ = "DeFi Hunter Community"

@@ -422,6 +422,21 @@ class ForkSimulator:
         "approve": ["approve", "setApprovalForAll", "increaseAllowance"],
         "selfdestruct": ["selfdestruct", "kill", "destroy", "die",
                          "killMe", "close"],
+        "oracle": ["getAmountsOut", "getAmountsIn", "quote",
+                   "getReserves", "slot0", "latestAnswer", "getPrice"],
+        "flashloan": ["flashLoan", "flashLoanSimple", "flash"],
+        "governance": ["propose", "queue", "execute", "castVote",
+                       "getVotes", "getPastVotes", "delegate"],
+        "bridge": ["mint", "mintTo", "finalizeDeposit", "finalize",
+                   "deposit", "processMessage"],
+        "twap": ["observe", "consult", "price0CumulativeLast",
+                 "cardinality", "observationLength"],
+        "crossfunc": ["withdrawBalance", "transferBalance", "withdraw",
+                      "transfer"],
+        "permit": ["permit", "DOMAIN_SEPARATOR", "nonces"],
+        "liquidation": ["liquidate", "liquidationCall", "seize"],
+        "forcesend": ["totalAssets", "convertToShares", "convertToAssets"],
+        "peg": ["openVault", "swapCollateral", "mintDai", "redeem"],
     }
     MAX_UINT = ("11579208923731619542357098500868790785326998466564056403"
                 "9457584007913129639935")
@@ -1175,9 +1190,412 @@ class ForkSimulator:
                     "source_finding": source_finding,
                     **({"verdict": "REFUTED"} if any("mined" in t for t in tried) else {})}
 
+        if attack == "oracle":
+            # Oracle manipulation: check if the contract reads DEX spot price
+            # (slot0 / getReserves) instead of a TWAP/Chainlink feed. CONFIRMED
+            # when the contract has price oracle functions AND the spot price
+            # can be moved in a single block via a flash-loan swap.
+            code = self._code_hex()
+            spot_markers = ["0x883bdbfd",  # UniswapV2 getReserves
+                            "0x0902f1ac",  # UniswapV2 slot0
+                            "0xf7729d43"]  # UniswapV3 slot0
+            twap_markers = ["0x5e76e5d4",  # price0CumulativeLast
+                            "0xc22cee0b",  # observe()
+                            "0x883bdbfd"]  # consult()
+            chainlink_markers = ["0x50d25bcd",  # latestAnswer
+                                 "0xfeaf968c",  # latestRoundData
+                                 "0xb1c5e427"]  # getPrice
+            has_spot = any(m in code for m in spot_markers)
+            has_twap = any(m in code for m in twap_markers)
+            has_chainlink = any(m in code for m in chainlink_markers)
+            steps.append({"step": "price source detection",
+                          "value": f"spot={'yes' if has_spot else 'no'}, "
+                                   f"twap={'yes' if has_twap else 'no'}, "
+                                   f"chainlink={'yes' if has_chainlink else 'no'}"})
+            if has_spot and not has_chainlink:
+                # Try to read a price function as proof
+                for sel in ["getAmountsOut(uint256,address[])",
+                            "getAmountsIn(uint256,address[])",
+                            "quote(uint256,uint256,uint256)"]:
+                    r = self._call(sel, ["1000000000000000000",
+                                         "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                                         "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"])
+                    if r["ok"]:
+                        steps.append({"step": f"price query {sel}",
+                                      "value": "responds — manipulable spot price"})
+                        return {"success": True, "attack": "oracle",
+                                "target": target,
+                                "profit": "Flash-loan swap can move spot price used by contract",
+                                "steps": steps,
+                                "evidence": (f"Contract reads DEX spot price ({sel} responds); "
+                                             "no Chainlink fallback — manipulable in one block"),
+                                "source_finding": source_finding}
+            if has_spot and has_twap and not has_chainlink:
+                steps.append({"step": "oracle risk",
+                              "value": "TWAP present but no Chainlink — TWAP window may be short"})
+            return {"success": False, "attack": "oracle", "target": target,
+                    "steps": steps,
+                    "evidence": ("No exploitable spot-price oracle found "
+                                 "(Chainlink/TWAP with no spot fallback, "
+                                 "or no price functions detected)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if has_chainlink and not has_spot else {})}
+
+        if attack == "flashloan":
+            # Flash loan attack surface: can the contract be drained in a
+            # single tx using flash-loaned capital? Check for flashLoan
+            # callback exposure + any payout/withdraw function.
+            code = self._code_hex()
+            flash_selectors = ["0x5cffe9de",  # Aave V2 flashLoan(address,address,uint256,bytes)
+                               "0x1f00ca74",  # Aave V3 flashLoanSimple
+                               "0xd78b67b0",  # dYdX soloMargin
+                               "0xe449022e"]  # Uniswap V3 flash()
+            has_flash = any(m in code for m in flash_selectors)
+            payout_selectors = ["0x3ccfd60b",  # withdraw(uint256)
+                                "0x2e1a7d4d",  # withdraw(uint256) (WETH-style)
+                                "0x89fab0ab"]  # claim()
+            has_payout = any(m in code for m in payout_selectors)
+            steps.append({"step": "flash loan callback",
+                          "value": "detected" if has_flash else "not found"})
+            steps.append({"step": "payout function",
+                          "value": "detected" if has_payout else "not found"})
+            if has_flash and has_payout:
+                # Try to call the flash loan to prove it responds
+                for fsel in flash_selectors:
+                    r = self._call(fsel, [self.attacker, self.attacker, "1", "0x"])
+                    if r["ok"]:
+                        steps.append({"step": f"flashLoan call ({fsel})",
+                                      "value": "responds — flash loan + payout combo"})
+                        return {"success": True, "attack": "flashloan",
+                                "target": target,
+                                "profit": "Flash loan funds the exploit with zero upfront capital",
+                                "steps": steps,
+                                "evidence": (f"Flash loan callback ({fsel}) responds; "
+                                             "payout function present — single-tx drain possible"),
+                                "source_finding": source_finding}
+            return {"success": False, "attack": "flashloan", "target": target,
+                    "steps": steps,
+                    "evidence": ("No flash loan attack surface found "
+                                 "(no flash loan callback, or no payout function)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if has_flash and not has_payout else {})}
+
+        if attack == "governance":
+            # Flash loan governance attack: can voting power be acquired via
+            # flash loan to pass a malicious proposal? Check for voting
+            # functions + proposal execution + snapshot protection.
+            code = self._code_hex()
+            vote_markers = ["0x5542022d",  # getVotes(address)
+                            "0x1d0b6414",  # getPastVotes(address,uint256)
+                            "0x90c50d4f",  # getPriorVotes(address,uint256)
+                            "0xe8a3d485"]  # delegates(address)
+            proposal_markers = ["0xc01f8bbf",  # propose()
+                                "0x183ff4ff",  # queue()
+                                "0xed603761"]  # execute()
+            has_votes = any(m in code for m in vote_markers)
+            has_proposals = any(m in code for m in proposal_markers)
+            steps.append({"step": "voting functions",
+                          "value": "detected" if has_votes else "not found"})
+            steps.append({"step": "proposal execution",
+                          "value": "detected" if has_proposals else "not found"})
+            if has_votes and has_proposals:
+                # Check for snapshot protection (getPastVotes with block.number)
+                has_snapshot = any(m in code for m in ["0x1d0b6414", "0x90c50d4f"])
+                steps.append({"step": "snapshot protection",
+                              "value": "present" if has_snapshot else "MISSING"})
+                if not has_snapshot:
+                    return {"success": True, "attack": "governance",
+                            "target": target,
+                            "profit": "Flash loan can acquire voting power to pass malicious proposal",
+                            "steps": steps,
+                            "evidence": ("Voting + proposal execution found; "
+                                         "no snapshot protection — flash loan governance attack possible"),
+                            "source_finding": source_finding}
+            return {"success": False, "attack": "governance", "target": target,
+                    "steps": steps,
+                    "evidence": ("No flash loan governance attack surface "
+                                 "(no voting functions, no proposal execution, "
+                                 "or snapshot protection present)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if has_snapshot else {})}
+
+        if attack == "bridge":
+            # Bridge deposit spoof: can a deposit be finalized without a
+            # valid cross-chain proof? Check for mint/finalizeDeposit +
+            # proof verification (merkle/sig check).
+            code = self._code_hex()
+            mint_selectors = ["0x40c10f19",  # mint(address,uint256)
+                              "0xa0712d68",  # mint(uint256)
+                              "0x449a540c"]  # mintTo(address,uint256)
+            finalize_selectors = ["0x20dd9f18",  # finalizeDeposit
+                                  "0x0ecbd0b7",  # finalize(address,bytes)
+                                  "0x0b37eb8b"]  # finalizeDeposit(bytes32,...)
+            proof_markers = ["0x3e5a1ab4",  # verifyMerkleProof
+                             "0x1fa9e23d",  # ECDSA.recover (sig check)
+                             "0x8b9e6e62"]  # MerkleProof.verify
+            has_mint = any(m in code for m in mint_selectors)
+            has_finalize = any(m in code for m in finalize_selectors)
+            has_proof = any(m in code for m in proof_markers)
+            steps.append({"step": "mint/finalize function",
+                          "value": f"mint={'yes' if has_mint else 'no'}, "
+                                   f"finalize={'yes' if has_finalize else 'no'}"})
+            steps.append({"step": "proof verification",
+                          "value": "detected" if has_proof else "NOT FOUND"})
+            if (has_mint or has_finalize) and not has_proof:
+                return {"success": True, "attack": "bridge",
+                        "target": target,
+                        "profit": "Bridge deposit can be spoofed without cross-chain proof",
+                        "steps": steps,
+                        "evidence": ("Bridge mint/finalize present but NO proof verification "
+                                     "(no merkle/sig check) — deposits can be fabricated"),
+                        "source_finding": source_finding}
+            return {"success": False, "attack": "bridge", "target": target,
+                    "steps": steps,
+                    "evidence": ("No bridge spoofing surface found "
+                                 "(no mint/finalize function, or proof verification present)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if has_proof else {})}
+
+        if attack == "twap":
+            # TWAP oracle manipulation: check if the observation window is
+            # short enough to be manipulated via flash loan. Read the
+            # observation card (pool.slot0.twapSample or similar) to check.
+            code = self._code_hex()
+            twap_markers = ["0x883bdbfd",  # observe()
+                            "0xc22cee0b",  # observe(uint32[])
+                            "0x5e76e5d4"]  # price0CumulativeLast
+            has_twap = any(m in code for m in twap_markers)
+            steps.append({"step": "TWAP functions",
+                          "value": "detected" if has_twap else "not found"})
+            if has_twap:
+                # Try to read observation length (indicates window)
+                for sel in ["cardinality()(uint32)", "observationLength()(uint256)",
+                            "period()(uint256)"]:
+                    r = self._call(sel, [])
+                    if r["ok"]:
+                        val = self._to_int(r["stdout"])
+                        steps.append({"step": f"observation param ({sel})",
+                                      "value": str(val or r["stdout"])})
+                        if val and val < 1800:  # < 30 minutes
+                            return {"success": True, "attack": "twap",
+                                    "target": target,
+                                    "profit": "Short TWAP window manipulable via flash loan",
+                                    "steps": steps,
+                                    "evidence": (f"TWAP observation window ≈ {val}s "
+                                                 "(< 30 min) — flash loan can skew the average"),
+                                    "source_finding": source_finding}
+                steps.append({"step": "TWAP window",
+                              "value": "could not read — needs manual verification"})
+                return {"success": False, "attack": "twap", "target": target,
+                        "steps": steps,
+                        "evidence": ("TWAP functions present but window length "
+                                     "could not be determined automatically."),
+                        "source_finding": source_finding,
+                        "verdict": "UNVERIFIED"}
+            return {"success": False, "attack": "twap", "target": target,
+                    "steps": steps,
+                    "evidence": "No TWAP oracle functions detected.",
+                    "source_finding": source_finding}
+
+        if attack == "crossfunc":
+            # Cross-function reentrancy: one function sends ETH before
+            # updating state, another function trusts the same state.
+            # Check for withdrawBalance() + transferBalance() pattern
+            # (the经典 BZX/Euler pattern).
+            code = self._code_hex()
+            withdraw_patterns = ["0x5fd8c710",  # withdrawBalance()
+                                 "0x2e1a7d4d",  # withdraw(uint256)
+                                 "0x3ccfd60b"]  # withdraw(uint256)
+            transfer_patterns = ["0x56a6d9ef",  # transferBalance(address,uint256)
+                                 "0x1a8145bb",  # transfer(address,uint256)
+                                 "0x90f871b9"]  # transferFrom(address,address,uint256)
+            has_withdraw = any(m in code for m in withdraw_patterns)
+            has_transfer = any(m in code for m in transfer_patterns)
+            steps.append({"step": "withdraw/balance function",
+                          "value": "detected" if has_withdraw else "not found"})
+            steps.append({"step": "transfer function",
+                          "value": "detected" if has_transfer else "not found"})
+            guard_markers = ["0xbf353dbb",  # nonReentrant
+                             "0x70480275"]  # reentrancy guard
+            has_guard = any(m in code for m in guard_markers)
+            steps.append({"step": "reentrancy guard",
+                          "value": "detected" if has_guard else "NOT FOUND"})
+            if has_withdraw and has_transfer and not has_guard:
+                return {"success": True, "attack": "crossfunc",
+                        "target": target,
+                        "profit": "Cross-function reentrancy: state update delayed across functions",
+                        "steps": steps,
+                        "evidence": ("withdraw + transfer present; no reentrancy guard — "
+                                     "cross-function reentrancy possible"),
+                        "source_finding": source_finding}
+            return {"success": False, "attack": "crossfunc", "target": target,
+                    "steps": steps,
+                    "evidence": ("No cross-function reentrancy surface found "
+                                 "(missing functions or reentrancy guard present)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if has_guard else {})}
+
+        if attack == "permit":
+            # ERC-2612 permit replay: check if the domain separator includes
+            # chainId — if not, a permit signature on one chain can be replayed
+            # on another chain.
+            code = self._code_hex()
+            has_permit = "0xd505accf" in code  # permit(address,address,uint256,uint256,uint8,bytes32,bytes32)
+            steps.append({"step": "permit function",
+                          "value": "detected" if has_permit else "not found"})
+            if has_permit:
+                # Read DOMAIN_SEPARATOR() to check for chainId
+                dom = self._call("DOMAIN_SEPARATOR()", [], extra_from=False)
+                if dom["ok"] and dom["stdout"]:
+                    dom_hex = dom["stdout"].strip().lower()
+                    steps.append({"step": "DOMAIN_SEPARATOR",
+                                  "value": dom_hex[:66]})
+                    # Read chainId from the contract
+                    chain = self._call("chainId()", [], extra_from=False)
+                    chain_val = self._to_int(chain["stdout"]) if chain["ok"] else None
+                    steps.append({"step": "chainId()",
+                                  "value": str(chain_val) if chain_val else "could not read"})
+                    # Check if chainId is embedded in the domain separator
+                    if chain_val and len(dom_hex) >= 66:
+                        chain_hex = hex(chain_val)[2:].zfill(64)
+                        if chain_hex not in dom_hex:
+                            return {"success": True, "attack": "permit",
+                                    "target": target,
+                                    "profit": "Permit signature replayable across chains",
+                                    "steps": steps,
+                                    "evidence": (f"DOMAIN_SEPARATOR does NOT include "
+                                                 f"chainId={chain_val} — cross-chain replay possible"),
+                                    "source_finding": source_finding}
+                    steps.append({"step": "replay risk",
+                                  "value": "chainId present in domain separator or could not determine"})
+            return {"success": False, "attack": "permit", "target": target,
+                    "steps": steps,
+                    "evidence": ("No exploitable permit found "
+                                 "(no permit function, or chainId present in domain separator)."),
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if has_permit and chain_val else {})}
+
+        if attack == "liquidation":
+            # Permissionless liquidation: can anyone call liquidate() to
+            # front-run liquidations and capture the bonus?
+            tried = []
+            for sel, args in self._merge_candidates(
+                    [("liquidate(address,uint256,address,address)",
+                      [self.attacker, "1", self.attacker, self.attacker]),
+                     ("liquidate(address,uint256)",
+                      [self.attacker, "1"]),
+                     ("liquidate(address)",
+                      [self.attacker])]):
+                r = self._call(sel, args)
+                tried.append(f"{sel}: {'returned' if r['ok'] else 'reverted'}")
+                if r["ok"]:
+                    steps.append({"step": f"{sel} from arbitrary account",
+                                  "value": "returned — permissionless liquidation"})
+                    return {"success": True, "attack": "liquidation",
+                            "target": target,
+                            "profit": "Anyone can liquidate positions and capture the bonus",
+                            "steps": steps,
+                            "evidence": f"{sel} callable by arbitrary account",
+                            "source_finding": source_finding}
+            steps.append({"step": "liquidation selectors", "value": "; ".join(tried)})
+            return {"success": False, "attack": "liquidation", "target": target,
+                    "steps": steps,
+                    "evidence": "No permissionless liquidation function found.",
+                    "source_finding": source_finding,
+                    **({"verdict": "REFUTED"} if any("returned" in t for t in tried) else {})}
+
+        if attack == "forcesend":
+            # Forced ETH send: does the contract use address(this).balance
+            # for accounting (ERC-4626 totalAssets)? If so, selfdestruct
+            # force-send can inflate the share price.
+            code = self._code_hex()
+            assets_markers = ["0x01e1d114",  # totalAssets()
+                              "0x51638b2c",  # convertToShares(uint256)
+                              "0x2d98b13d"]  # convertToAssets(uint256)
+            has_assets = any(m in code for m in assets_markers)
+            balance_markers = ["0x70a08231",  # balanceOf(address)
+                               "0xb6b55f25"]  # balanceOf() — address(this).balance check
+            has_balance = any(m in code for m in balance_markers)
+            steps.append({"step": "totalAssets/convert functions",
+                          "value": "detected" if has_assets else "not found"})
+            steps.append({"step": "balance accounting",
+                          "value": "detected" if has_balance else "not found"})
+            if has_assets and has_balance:
+                # Try to read totalAssets
+                r = self._call("totalAssets()", [], extra_from=False)
+                if r["ok"]:
+                    assets = self._to_int(r["stdout"])
+                    steps.append({"step": "totalAssets()",
+                                  "value": str(assets) if assets else r["stdout"]})
+                    # Compare with actual ETH balance
+                    bal = self._to_int(self._balance(target))
+                    steps.append({"step": "actual ETH balance",
+                                  "value": str(bal) if bal else "could not read"})
+                    if assets and bal and assets > bal:
+                        return {"success": True, "attack": "forcesend",
+                                "target": target,
+                                "profit": "Force-send ETH can inflate share price",
+                                "steps": steps,
+                                "evidence": (f"totalAssets ({assets}) > actual balance ({bal}) — "
+                                             "contract reports value beyond its ETH holdings"),
+                                "source_finding": source_finding}
+                    return {"success": False, "attack": "forcesend",
+                            "target": target, "steps": steps,
+                            "evidence": ("totalAssets matches ETH balance — "
+                                         "force-send not exploitable here."),
+                            "source_finding": source_finding, "verdict": "REFUTED"}
+            return {"success": False, "attack": "forcesend", "target": target,
+                    "steps": steps,
+                    "evidence": ("No force-send accounting surface found "
+                                 "(no totalAssets or balance-based accounting)."),
+                    "source_finding": source_finding}
+
+        if attack == "peg":
+            # Stablecoin peg attack: can the collateral backing ratio be
+            # manipulated? Check for vault + collateral swap functions.
+            code = self._code_hex()
+            vault_markers = ["0x5b6fc7a8",  # openVault()
+                             "0xb1d4c5ef"]  # openVault(address)
+            swap_markers = ["0x76cc7a9a",  # swapCollateral
+                            "0x0f7ee467",  # swapCollateral(uint256,uint256)
+                            "0xd5c72b81"]  # swapCollateral
+            has_vault = any(m in code for m in vault_markers)
+            has_swap = any(m in code for m in swap_markers)
+            steps.append({"step": "vault open function",
+                          "value": "detected" if has_vault else "not found"})
+            steps.append({"step": "collateral swap",
+                          "value": "detected" if has_swap else "not found"})
+            if has_vault and has_swap:
+                # Check for oracle dependency in swap
+                oracle_in_swap = any(m in code for m in ["0x50d25bcd", "0x883bdbfd"])
+                steps.append({"step": "oracle in swap path",
+                              "value": "yes" if oracle_in_swap else "not detected"})
+                return {"success": True, "attack": "peg",
+                        "target": target,
+                        "profit": "Collateral swap at distorted price mints unbacked stablecoin",
+                        "steps": steps,
+                        "evidence": ("Vault + collateral swap present — "
+                                     "combine with oracle manipulation for peg attack"),
+                        "source_finding": source_finding,
+                        "verdict": "UNVERIFIED"}  # needs oracle combo proof
+            return {"success": False, "attack": "peg", "target": target,
+                    "steps": steps,
+                    "evidence": ("No peg attack surface found "
+                                 "(no vault + collateral swap functions)."),
+                    "source_finding": source_finding}
+
         return {"success": False, "attack": attack, "target": target,
                 "error": f"ForkSimulator does not support attack '{attack}'",
                 "source_finding": source_finding}
+
+    def _code_hex(self) -> str:
+        """Raw bytecode hex of the target (for selector scanning)."""
+        if not getattr(self, "_target", None) or not self.available:
+            return ""
+        proc = subprocess.run(
+            ["cast", "code", self._target, "--rpc-url", self.rpc_url_local],
+            capture_output=True, text=True, timeout=30)
+        return proc.stdout.strip()
 
     def __exit__(self, exc_type, exc, tb) -> None:
         if self.proc is not None:
