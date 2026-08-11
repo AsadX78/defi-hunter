@@ -5,7 +5,7 @@ continuous monitoring loop.
 
 Usage:
     from defihunter.sentinel.service import SentinelService
-    service = SentinelService(rpc_url="https://eth.llamarpc.com")
+    service = SentinelService(rpc_url="https://ethereum-rpc.publicnode.com")
     service.add_protocol("Morpho", addresses=["0x..."])
     service.start()  # blocks, runs monitoring loop
 """

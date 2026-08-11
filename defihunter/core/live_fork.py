@@ -68,7 +68,7 @@ class LiveFork:
     """Direct eth_call with state overrides — no Anvil, no Foundry.
 
     Usage:
-        with LiveFork(rpc_url="https://eth.llamarpc.com") as fork:
+        with LiveFork(rpc_url="https://ethereum-rpc.publicnode.com") as fork:
             result = fork.call_with_override(
                 target="0x1234...",
                 selector="mint(address,uint256)",

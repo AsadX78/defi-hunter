@@ -9,7 +9,7 @@ from typing import Dict, Optional
 
 # Default RPCs — public endpoints, rate-limited. Users should set their own.
 DEFAULT_RPCS = {
-    "ethereum": "https://eth.llamarpc.com",
+    "ethereum": "https://ethereum-rpc.publicnode.com",
     "bsc": "https://bsc-dataseed.binance.org",
     "polygon": "https://polygon-rpc.com",
     "arbitrum": "https://arb1.arbitrum.io/rpc",
@@ -25,6 +25,49 @@ DEFAULT_RPCS = {
     "celo": "https://forno.celo.org",
     "moonbeam": "https://rpc.api.moonbeam.network",
 }
+
+# Fallback RPCs tried in order when the primary endpoint is unreachable.
+FALLBACK_RPCS = {
+    "ethereum": [
+        "https://ethereum-rpc.publicnode.com",
+        "https://eth.drpc.org",
+        "https://eth-mainnet.public.blastapi.io",
+        "https://cloudflare-eth.com",
+        "https://rpc.ankr.com/eth",
+    ],
+}
+
+
+def resolve_rpc(chain: str, rpc_url: Optional[str] = None) -> str:
+    """Return the working RPC for a chain. If rpc_url is given and reachable
+    it wins; otherwise fall back through the public endpoint list and return
+    the first one that responds to eth_blockNumber. Always returns at least
+    the configured default (even if it may be down) so callers degrade
+    gracefully."""
+    import subprocess, json
+    candidates = []
+    if rpc_url:
+        candidates.append(rpc_url)
+    candidates += [DEFAULT_RPCS.get(chain, "")]
+    candidates += FALLBACK_RPCS.get(chain, [])
+    seen = set()
+    for url in candidates:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        try:
+            proc = subprocess.run(
+                ["curl", "-s", "--max-time", "10", "-X", "POST", url,
+                 "-H", "Content-Type: application/json",
+                 "-d", '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'],
+                capture_output=True, text=True, timeout=12)
+            if proc.returncode == 0:
+                data = json.loads(proc.stdout)
+                if data.get("result"):
+                    return url
+        except Exception:
+            continue
+    return DEFAULT_RPCS.get(chain, "") or (rpc_url or "")
 
 
 @dataclass

