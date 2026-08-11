@@ -124,3 +124,14 @@ def test_cli_templates_list():
     assert result.exit_code == 0
     assert 'inflation_attack' in result.output
     assert 'force_send_break' in result.output
+
+def test_core_package_has_init():
+    """Regression: find_packages() silently excluded defihunter.core because
+    it lacked __init__.py, shipping a hollow wheel with no engine. The core
+    package must always be importable and contain the real modules."""
+    import defihunter.core as core
+    assert core.__file__.endswith("__init__.py")
+    # every core module must be importable
+    for mod in ("analyzer", "simulator", "live_fork", "attacker",
+                "slither", "sync", "recon", "config"):
+        __import__(f"defihunter.core.{mod}")
