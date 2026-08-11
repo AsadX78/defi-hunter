@@ -54,8 +54,22 @@ def cli(ctx, config, verbose, no_intro):
               '(prompted if missing, default anvil dev account 0x3C44…)')
 @click.option('--profit-wallet', help='Wallet the attacker-contract drain is '
               'swept to (prompted if missing, default: the attacker EOA)')
-def wizard(repo, check, attacks, attacker, profit_wallet):
-    """Interactive guided hunt: GitHub repo → contracts → vulnerability checks"""
+@click.option('--format', '-f', 'report_format', type=click.Choice(['html', 'pdf', 'markdown', 'json']),
+              default=None, help='Report format (skips the prompt)')
+@click.option('--full-scan', is_flag=True,
+              help='Full pipeline: static + simulate + exploit gen + report (no prompts)')
+@click.option('--no-exploit', is_flag=True, help='Skip exploit script generation')
+def wizard(repo, check, attacks, attacker, profit_wallet, report_format, full_scan, no_exploit):
+    """Interactive guided hunt: GitHub repo → contracts → vulnerability checks
+
+    Full pipeline (no prompts):
+      defihunter wizard --repo 0x... --full-scan
+      defihunter wizard --repo https://github.com/... --full-scan --format pdf
+
+    Interactive (guided prompts):
+      defihunter wizard
+      defihunter wizard --repo 0x...
+    """
     from defihunter.wizard import run_wizard, is_eoa
     for name, val in (("attacker", attacker), ("profit-wallet", profit_wallet)):
         if val and not is_eoa(val):
@@ -65,7 +79,8 @@ def wizard(repo, check, attacks, attacker, profit_wallet):
     attack_list = [a.strip() for a in attacks.split(',') if a.strip()] if attacks else None
     run_wizard(verbose=False, repo_url=repo, check=check, attacks=attack_list,
                version=__version__, attacker=attacker,
-               profit_wallet=profit_wallet)
+               profit_wallet=profit_wallet, report_format=report_format,
+               full_scan=full_scan, no_exploit=no_exploit)
 
 
 @cli.group()

@@ -120,7 +120,7 @@ def test_wizard_boots_with_preset_repo(fake_repo: Path):
     # input for ask_rpc: type 'skip' -> no on-chain verification
     result = runner.invoke(
         cli, ["wizard", "--repo", str(fake_repo), "--check", "static"],
-        input="skip\nn\n",  # rpc=skip, then "Generate report?" = no
+        input="skip\n1\nn\n",  # rpc=skip, report format=1(html), exploit gen=no
     )
     assert result.exit_code == 0, result.output
     assert "Found 3 candidate address" in result.output
@@ -134,8 +134,8 @@ def test_bare_cli_boots_wizard(fake_repo: Path):
     from defihunter.cli import cli
 
     runner = CliRunner()
-    result = runner.invoke(cli, [], input=f"{fake_repo}\nskip\n3\nall\nn\n")
-    # check type "3" = both, attacks "all" -> runs the whole pipeline
+    result = runner.invoke(cli, [], input=f"{fake_repo}\nskip\n3\nall\n1\nn\n")
+    # check type "3" = both, attacks "all", report=1(html), exploit=no
     assert result.exit_code == 0, result.output
     assert "GitHub repo URL" in result.output or "Protocol source" in result.output
     assert "HUNT COMPLETE" in result.output

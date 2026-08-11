@@ -179,6 +179,23 @@ def ask_check_type() -> str:
         ui.warn("Enter 1, 2 or 3.")
 
 
+def ask_report_format() -> str:
+    """Q: what report format to generate."""
+    ui.console.print()
+    ui.console.print(ui.summary_panel([
+        ("1", "HTML (default) — professional executive report"),
+        ("2", "PDF — printable version of the HTML report"),
+        ("3", "Markdown — lightweight text report"),
+        ("4", "JSON — machine-readable data only"),
+        ("5", "None — skip report generation"),
+    ], title="Report Format"))
+    while True:
+        answer = Prompt.ask("[step]Report format?[/]", default="1").strip()
+        if answer in ("1", "2", "3", "4", "5"):
+            return {"1": "html", "2": "pdf", "3": "markdown", "4": "json", "5": "none"}[answer]
+        ui.warn("Enter 1-5.")
+
+
 def ask_attacks() -> List[str]:
     """Q4: which attack simulations to run (only for simulate/both)."""
     ui.console.print()
@@ -781,8 +798,16 @@ def run_wizard(
     version: str = "",
     attacker: Optional[str] = None,
     profit_wallet: Optional[str] = None,
+    report_format: Optional[str] = None,
+    full_scan: bool = False,
+    no_exploit: bool = False,
 ) -> None:
-    """Boot the guided hunt. Pass repo_url/check/attacks to skip those prompts."""
+    """Boot the guided hunt. Pass repo_url/check/attacks to skip those prompts.
+
+    full_scan  -- skip prompts, do static+sim+exploit+report
+    no_exploit -- skip exploit generation even if confirmed findings exist
+    report_format -- 'html', 'pdf', 'markdown', 'json', or None (prompt)
+    """
     ui.intro(version)
 
     # --- 1. Repo -----------------------------------------------------------
@@ -864,7 +889,10 @@ def run_wizard(
         ui.info(f"Checking {len(contracts)} contract(s).")
 
     # --- 3. Check type -----------------------------------------------------
-    if check in ("static", "simulate", "both"):
+    if full_scan:
+        check = "both"
+        ui.step("Vulnerability check", "both (full scan)")
+    elif check in ("static", "simulate", "both"):
         ui.step("Vulnerability check", check)
     else:
         check = ask_check_type()
@@ -890,10 +918,50 @@ def run_wizard(
     if check in ("simulate", "both"):
         sim_results = _run_simulate(contracts, attacks, rpc=rpc)
 
-    # --- Report ------------------------------------------------------------
+    # --- Report format -----------------------------------------------------
     ui.console.print()
-    if Confirm.ask("[step]Generate an HTML report?[/]", default=True):
-        _write_report(scan, findings, sim_results, fork_results)
+    if report_format in ("html", "pdf", "markdown", "json"):
+        fmt = report_format
+        ui.step("Report format", fmt)
+    elif full_scan:
+        fmt = "html"
+        ui.step("Report format", "html (full scan)")
+    else:
+        fmt = ask_report_format()
+
+    if fmt != "none":
+        _write_report(scan, findings, sim_results, fork_results, fmt=fmt)
+
+    # --- Exploit generation -------------------------------------------------
+    confirmed_forks = [r for r in fork_results if r.get("success") or r.get("verdict") == "CONFIRMED"]
+    exploits_generated = 0
+    if confirmed_forks and not no_exploit:
+        ui.rule("EXPLOIT GENERATION")
+        if full_scan or Confirm.ask(
+            f"[step]Generate Foundry exploit scripts for {len(confirmed_forks)} confirmed finding(s)?[/]",
+            default=True,
+        ):
+            from defihunter.core.exploit_generator import ExploitGenerator
+            exploit_dir = Path("./exploit")
+            gen = ExploitGenerator(output_dir=str(exploit_dir))
+            for proof in confirmed_forks:
+                src = proof.get("source_finding") or proof
+                attack = src.get("attack") or src.get("type", "")
+                target_addr = proof.get("target") or proof.get("address", "")
+                if not attack or not target_addr:
+                    continue
+                try:
+                    result = gen.generate(attack, target_addr)
+                    if result and result.get("contracts"):
+                        exploits_generated += 1
+                        ui.ok(f"Exploit: {attack} -> {exploit_dir}")
+                except Exception as e:
+                    ui.warn(f"Could not generate exploit for {attack}: {e}")
+            ui.step("Exploits generated", str(exploits_generated))
+    elif no_exploit:
+        ui.info("Exploit generation skipped (--no-exploit)")
+    elif confirmed_forks:
+        ui.info(f"{len(confirmed_forks)} confirmed finding(s) — run 'defihunter exploit' to generate scripts")
 
     sim_successes = sum(1 for r in sim_results if r.get("success"))
     fork_successes = sum(1 for r in fork_results if r.get("success"))
@@ -917,34 +985,52 @@ def run_wizard(
         ("static findings", str(len(findings))),
         ("fork-verified", f"{len(fork_results)} run, {fork_successes} exploitable"),
         ("simulations", f"{len(sim_results)} run, {sim_successes} succeeded"),
+        ("exploits generated", str(exploits_generated)),
+        ("report format", fmt),
     ], level=level)
     ui.ok("Done. Happy hunting! 🏆")
 
 
 def _write_report(scan: Dict, findings: List[Dict], sim_results: List[Dict],
-                  fork_results: Optional[List[Dict]] = None) -> None:
-    """Persist findings JSON + HTML report into ./output."""
+                  fork_results: Optional[List[Dict]] = None,
+                  fmt: str = "html") -> None:
+    """Persist findings JSON + report into ./output."""
     out_dir = Path("output")
     out_dir.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     payload = {
+        "tool": "defihunter",
+        "version": "1.5.0",
+        "generated_at": datetime.now().isoformat() + "Z",
         "target": scan.get("repo_url", "wizard"),
         "contracts": scan.get("contracts", {}),
         "vulnerabilities": findings,
         "simulations": sim_results,
         "fork_verified": fork_results or [],
+        "summary": {
+            "static_findings": len(findings),
+            "fork_confirmed": sum(1 for r in (fork_results or [])
+                                  if r.get("success") or r.get("verdict") == "CONFIRMED"),
+            "sim_successes": sum(1 for r in sim_results if r.get("success")),
+        },
     }
+
+    # Always save JSON
     json_path = out_dir / f"wizard_{ts}.json"
     json_path.write_text(json.dumps(payload, indent=2))
 
-    html_path = out_dir / f"wizard_{ts}.html"
-    try:
-        ReportGenerator().generate(payload, format="html", output=str(html_path))
-    except Exception as e:  # reporter failure shouldn't kill the wizard
-        ui.warn(f"HTML report failed ({e}) — JSON kept.")
-        html_path = json_path
+    # Generate report in requested format
+    ext_map = {"html": ".html", "pdf": ".pdf", "markdown": ".md", "json": ".json"}
+    ext = ext_map.get(fmt, ".html")
+    report_path = out_dir / f"wizard_{ts}{ext}"
 
-    with ui.spinner("Saving report"):
-        pass
-    ui.ok(f"Report saved: {html_path}")
+    if fmt == "json":
+        ui.ok(f"Report saved: {json_path}")
+        return
+
+    try:
+        ReportGenerator().generate(payload, format=fmt, output=str(report_path))
+        ui.ok(f"Report saved: {report_path}")
+    except Exception as e:
+        ui.warn(f"Report generation failed ({e}) — JSON kept at {json_path}")
