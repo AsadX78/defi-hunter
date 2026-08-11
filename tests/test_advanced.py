@@ -240,7 +240,7 @@ def test_render_diagram_markdown_fenced(findings):
 # ---------------------------------------------------------------------------
 
 def test_sarif_structure(findings):
-    log = findings_to_sarif(findings, tool_version="1.6.0", target="BadToken")
+    log = findings_to_sarif(findings, tool_version="1.6.1", target="BadToken")
     assert log["version"] == "2.1.0"
     run = log["runs"][0]
     assert run["tool"]["driver"]["name"] == "defi-hunter"
@@ -252,7 +252,7 @@ def test_sarif_structure(findings):
 
 def test_sarif_export_file(findings, tmp_path):
     out = tmp_path / "report.sarif"
-    export_sarif(findings, str(out), tool_version="1.6.0", target="T")
+    export_sarif(findings, str(out), tool_version="1.6.1", target="T")
     data = json.loads(out.read_text())
     assert data["version"] == "2.1.0"
     assert len(data["runs"][0]["results"]) == 2
@@ -301,13 +301,13 @@ def test_run_fuzz_suite_graceful_missing(tmp_path):
 def report_payload(findings) -> dict:
     return {
         "tool": "defihunter",
-        "version": "1.6.0",
+        "version": "1.6.1",
         "target": "BadToken",
         "chain": "ethereum",
         "contracts": {"0x1234": {"name": "BadToken", "verified": True}},
         "vulnerabilities": findings,
         "scan_time": "2026-08-11T00:00:00",
-        "tool_version": "1.6.0",
+        "tool_version": "1.6.1",
     }
 
 

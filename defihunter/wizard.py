@@ -1024,7 +1024,7 @@ def _write_report(scan: Dict, findings: List[Dict], sim_results: List[Dict],
 
     payload = {
         "tool": "defihunter",
-        "version": "1.6.0",
+        "version": "1.6.1",
         "generated_at": datetime.now().isoformat() + "Z",
         "target": scan.get("repo_url", "wizard"),
         "contracts": scan.get("contracts", {}),

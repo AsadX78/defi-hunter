@@ -22,8 +22,8 @@ testing, with Mermaid diagrams, SARIF export, and GitHub/Jira issue sync.
 
 Author: DeFi Hunter Community
 License: MIT
-Version: 1.6.0
+Version: 1.6.1
 """
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 __author__ = "DeFi Hunter Community"
