@@ -2,8 +2,10 @@
 
 > Open Source DeFi Security Analysis Toolkit
 
+[![PyPI](https://img.shields.io/pypi/v/defi-hunter.svg)](https://pypi.org/project/defi-hunter/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/defi-hunter.svg)](https://pypi.org/project/defi-hunter/)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/defi-hunter.svg)](https://pypi.org/project/defi-hunter/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/defi-hunter/defi-hunter/workflows/CI/badge.svg)](https://github.com/defi-hunter/defi-hunter/actions)
 
 ## What Is DeFi Hunter?
