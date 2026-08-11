@@ -144,6 +144,50 @@ def test_analyze_repo_with_slither_runs_without_crash(vuln_repo: Path):
     assert result["findings"]  # line-aware engine always finds the unguarded mint
 
 
+def test_run_slither_parses_real_output(tmp_path):
+    """REAL integration test: run the actual slither binary against a
+    deliberately vulnerable contract and assert we parse its findings.
+
+    This is the regression test that caught the broken parser (which read
+    results.detection instead of results.detectors and returned 0 findings
+    on a contract slither flags). If slither is missing it fails loudly
+    rather than silently passing — integration bugs must not hide.
+    """
+    from defihunter.core.slither import run_slither, slither_available
+    slither = pytest.importorskip(
+        "shutil", reason="shutil is stdlib"
+    ).which("slither")
+    if not slither:
+        pytest.skip("slither binary not installed")
+
+    src = tmp_path / "Bad.sol"
+    src.write_text('''// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Bad {
+    mapping(address => uint256) public balances;
+    address public owner;
+    function mint(address to, uint256 amount) public {
+        balances[to] += amount;
+    }
+    function withdraw(uint256 amount) external {
+        (bool ok, ) = msg.sender.call{value: amount}("");
+        require(ok, "fail");
+        balances[msg.sender] -= amount;
+    }
+}
+''')
+    hits = run_slither(str(src), timeout=120)
+    # A contract with an external .call + unguarded mint must yield findings.
+    assert len(hits) > 0, "slither ran but parser returned 0 — parser regression"
+    ids = {h["detector_id"] for h in hits}
+    assert "reentrancy-benign" in ids or "low-level-calls" in ids, ids
+    for h in hits:
+        assert h["source"] == "slither"
+        assert h["severity"] in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
+        assert "/../" not in h.get("endpoint", ""), "path traversal in endpoint"
+        assert h.get("detector_id")
+
+
 def test_slither_available_returns_bool():
     assert isinstance(__import__("defihunter.core.slither", fromlist=["slither_available"]).slither_available(), bool)
 

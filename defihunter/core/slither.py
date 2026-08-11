@@ -196,9 +196,14 @@ def _run_slither_on_file(target: str, timeout: int) -> List[Dict]:
         return []
 
     findings: List[Dict] = []
-    results = data.get("results", {}).get("detection", [])
-    for det in results:
-        detector_id = det.get("check", "")
+    # Slither's JSON schema: results.detectors (not "detection"). Accept both
+    # so we're resilient across slither versions.
+    results = data.get("results", {})
+    dets = results.get("detectors") or results.get("detection") or []
+    for det in dets:
+        detector_id = det.get("check", "") or det.get("id", "")
+        if not detector_id:
+            continue
         info = SLITHER_DETECTOR_MAP.get(detector_id, SLITHER_DETECTOR_MAP["default"]).copy()
         if detector_id not in SLITHER_DETECTOR_MAP:
             info["title"] = info["title"].format(detector=detector_id)
@@ -210,17 +215,36 @@ def _run_slither_on_file(target: str, timeout: int) -> List[Dict]:
         if elements:
             first = elements[0]
             sm = first.get("source_mapping", {})
-            src = sm.get("filename", "")
-            line = sm.get("lines", [0])[0] or 0
+            # Prefer the short name; fall back to relative/absolute. Slither's
+            # filename_relative can contain ../.. traversal when run on a bare
+            # file — strip that so endpoints stay clean.
+            src = (sm.get("filename_short")
+                   or sm.get("filename_relative")
+                   or sm.get("filename", ""))
+            src = src.replace("../../", "").replace("../", "")
+            line = (sm.get("lines") or [0])[0] or 0
             snippet = sm.get("source", "")[:140]
 
         desc = info.get("desc", "Slither finding")
-        wiki = det.get("wiki", "")
+        wiki = det.get("reference", "") or det.get("wiki", "")
         if wiki:
-            desc += f"\n\nWiki: {wiki}"
+            desc += f"\n\nReference: {wiki}"
+        if det.get("description"):
+            desc = f"{desc}\n\n{det['description']}" if desc != info.get("desc") else det["description"]
+
+        # Severity from the detector map; fall back to slither's impact rating
+        # for detectors we don't explicitly map.
+        severity = info.get("severity", "MEDIUM")
+        mapped = detector_id in SLITHER_DETECTOR_MAP
+        impact = (det.get("impact") or "").lower()
+        if not mapped:
+            severity = {
+                "high": "HIGH", "medium": "MEDIUM", "low": "LOW",
+                "informational": "INFO", "optimization": "INFO",
+            }.get(impact, severity)
 
         finding = {
-            "severity": info.get("severity", "MEDIUM"),
+            "severity": severity,
             "title": info.get("title", f"Slither: {detector_id}"),
             "attack": info.get("attack", "governance"),
             "file": src or target,
@@ -231,7 +255,8 @@ def _run_slither_on_file(target: str, timeout: int) -> List[Dict]:
             "confirmed": False,
             "source": "slither",
             "detector_id": detector_id,
-            "references": [det.get("wiki", "")],
+            "impact": det.get("impact", ""),
+            "references": [r for r in [wiki] if r],
         }
         findings.append(finding)
 

@@ -24,7 +24,7 @@ FUZZ_TEMPLATES: Dict[str, str] = {
     (bool ok,) = address(TARGET).call(
         abi.encodeWithSignature("mint(address,uint256)", attacker, amount)
     );
-    // If the call succeeded, an unprivileged account minted — invariant broken.
+    // If the call succeeded, an unprivileged account minted - invariant broken.
     assertFalse(ok, "mint() callable by arbitrary account");
 }""",
     "initialize": """function testFuzz_initialize_secondCaller(address who) public {
@@ -34,7 +34,7 @@ FUZZ_TEMPLATES: Dict[str, str] = {
         abi.encodeWithSignature("initialize(address)", who)
     );
     // A successful re-initialize means ownership can be stolen.
-    assertFalse(ok, "initialize() re-callable — proxy takeover");
+    assertFalse(ok, "initialize() re-callable - proxy takeover");
 }""",
     "withdraw": """function testFuzz_withdraw_amount(uint256 amount) public {
     vm.assume(amount <= 1 ether);
@@ -50,7 +50,7 @@ FUZZ_TEMPLATES: Dict[str, str] = {
     (bool ok,) = address(TARGET).call(
         abi.encodeWithSignature("approve(address,uint256)", spender, amount)
     );
-    // If the token approves on behalf of the TESTER without auth — fine.
+    // If the token approves on behalf of the TESTER without auth - fine.
     // Flag only when the call reverted with a privilege error we don't expect.
     assertTrue(ok, "approve() reverted unexpectedly");
 }""",
@@ -96,6 +96,13 @@ def fuzz_test_name(target_addr: str) -> str:
     return "Fuzz" + (target_addr[2:6] if len(target_addr) > 6 else "Tgt")
 
 
+def _unescape_solidity(text: str) -> str:
+    """Templates use {{ }} for literal Solidity braces (so they are safe to
+    also use with .format()); the generator uses .replace(), so collapse
+    {{ -> { and }} -> } before writing."""
+    return text.replace("{{", "{").replace("}}", "}")
+
+
 def generate_fuzz_suite(attack_types: List[str],
                         target_addr: str = "0x0000000000000000000000000000000000000000",
                         out_dir: str = "fuzz") -> Optional[str]:
@@ -111,11 +118,13 @@ def generate_fuzz_suite(attack_types: List[str],
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     name = fuzz_test_name(target_addr)
-    body = FUZZ_TEST_HEADER.replace("{TARGET_NAME}", name).replace(
-        "{TARGET_ADDR}", target_addr)
+    body = _unescape_solidity(
+        FUZZ_TEST_HEADER.replace("{TARGET_NAME}", name).replace(
+            "{TARGET_ADDR}", target_addr))
     for t in matched:
-        body += "\n    " + FUZZ_TEMPLATES[t].replace("{TARGET_NAME}", name).replace(
-            "{TARGET_ADDR}", target_addr) + "\n"
+        body += "\n    " + _unescape_solidity(
+            FUZZ_TEMPLATES[t].replace("{TARGET_NAME}", name).replace(
+                "{TARGET_ADDR}", target_addr)) + "\n"
     body += FUZZ_TEST_FOOTER
 
     path = out / f"Fuzz{name}.t.sol"
