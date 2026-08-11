@@ -39,6 +39,7 @@ setup(
             "pytest>=7.0",
             "black>=22.0",
             "flake8>=5.0",
+            "jinja2>=3.0",
         ],
         "reports": [
             "jinja2>=3.0",

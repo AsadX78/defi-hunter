@@ -620,8 +620,18 @@ def run(ctx, attack, target, rpc, chain, block, format, mint_pct):
 @cli.command()
 @click.option('--input', '-i', required=True, help='Input findings JSON')
 @click.option('--output', '-o', required=True, help='Output file')
-@click.option('--format', '-f', type=click.Choice(['html', 'json', 'markdown']), default='html')
-def report(input, output, format):
+@click.option('--format', '-f', type=click.Choice(['html', 'json', 'markdown', 'sarif', 'pdf']), default='html')
+@click.option('--diagram', '-d', multiple=True,
+              type=click.Choice(['attack_flow', 'call_graph', 'storage_layout']),
+              help='Embed Mermaid diagram(s) in the report (repeatable)')
+@click.option('--template', '-t', default=None,
+              help='Custom Jinja2 HTML template path')
+@click.option('--sync', '-s', type=click.Choice(['github', 'jira']), default=None,
+              help='Push findings to an issue tracker after rendering')
+@click.option('--repo', default=None, help='GitHub repo (owner/name) for --sync github')
+@click.option('--project', default=None, help='Jira project key for --sync jira')
+@click.option('--dry-run', is_flag=True, help='Print tickets instead of creating them')
+def report(input, output, format, diagram, template, sync, repo, project, dry_run):
     """Generate professional security assessment report"""
     gen = ReportGenerator()
 
@@ -629,9 +639,33 @@ def report(input, output, format):
     ui.rule("REPORT")
     ui.step("Generating", f"{format} → {output}")
     with ui.spinner("Rendering report"):
-        report_path = gen.generate(findings, format=format, output=output)
+        report_path = gen.generate(findings, format=format, output=output,
+                                   diagrams=list(diagram) or None,
+                                   template=template)
 
     ui.ok(f"Report saved to {report_path}")
+
+    if sync:
+        from defihunter.core.sync import sync_github, sync_jira
+        vulns = findings.get("vulnerabilities", [])
+        if sync == "github":
+            if not repo:
+                ui.warn("--repo owner/name required for GitHub sync — skipped")
+                return
+            ui.step("Syncing", f"{len(vulns)} finding(s) → GitHub {repo}")
+            res = sync_github(vulns, *repo.split("/", 1), dry_run=dry_run)
+        else:
+            if not project:
+                ui.warn("--project KEY required for Jira sync — skipped")
+                return
+            ui.step("Syncing", f"{len(vulns)} finding(s) → Jira {project}")
+            res = sync_jira(vulns, os.getenv("JIRA_BASE_URL", ""), project,
+                            dry_run=dry_run)
+        if dry_run:
+            ui.info(f"DRY-RUN: would create {len(res.get('created', []))} ticket(s)")
+        else:
+            ui.ok(f"Created {len(res.get('created', []))} ticket(s), "
+                  f"skipped {res.get('skipped', 0)}")
 
 
 @cli.group()
@@ -1468,6 +1502,150 @@ def sentinel_threats(limit):
         )
 
     ui.console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Advanced feature commands — fuzz, diagrams, sarif, sync
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def fuzz():
+    """Foundry fuzz/invariant testing integration"""
+    pass
+
+
+@fuzz.command("generate")
+@click.option('--attacks', '-a', multiple=True, required=True,
+              help='Attack types to fuzz-test (repeatable)')
+@click.option('--target', '-t', default="0x0000000000000000000000000000000000000000",
+              help='Target contract address')
+@click.option('--output', '-o', default="fuzz", help='Output directory')
+def fuzz_generate(attacks, target, output):
+    """Generate a Foundry fuzz test suite from attack types"""
+    from defihunter.core.fuzz import generate_fuzz_suite
+    ui.rule("FUZZ SUITE GENERATION")
+    path = generate_fuzz_suite(list(attacks), target_addr=target, out_dir=output)
+    if not path:
+        ui.warn(f"No fuzz template matches: {', '.join(attacks)}")
+        return
+    ui.ok(f"Fuzz suite written to {path}")
+    ui.info("Run with: forge test --match-contract Fuzz --fuzz-runs 1000")
+
+
+@fuzz.command("run")
+@click.option('--file', '-f', required=True, help='Path to generated .t.sol file')
+@click.option('--runs', '-r', default=500, help='Number of fuzz runs per test')
+@click.option('--timeout', default=180, help='Max seconds for the fuzz run')
+def fuzz_run(file, runs, timeout):
+    """Run the generated fuzz suite with forge"""
+    from defihunter.core.fuzz import run_fuzz_suite
+    ui.rule("FUZZ RUN")
+    with ui.spinner(f"Running {runs} fuzz runs/test"):
+        result = run_fuzz_suite(file, fuzz_runs=runs, timeout=timeout)
+    if not result.get("ran"):
+        ui.warn(f"Fuzz did not run: {result.get('reason', 'unknown')}")
+        return
+    if result.get("ok"):
+        ui.ok(f"All fuzz tests passed ({result['passed']} PASS)")
+    else:
+        ui.warn(f"Fuzz failed: {result['failed']} FAIL, {result['passed']} PASS")
+        if result.get("stdout"):
+            for line in result["stdout"].splitlines():
+                if "[FAIL]" in line or "Failing" in line:
+                    ui.console.print(line)
+
+
+@cli.command()
+@click.option('--kind', '-k', required=True,
+              type=click.Choice(['attack_flow', 'call_graph', 'storage_layout']),
+              help='Diagram kind')
+@click.option('--input', '-i', required=True, help='Findings JSON')
+@click.option('--output', '-o', required=True, help='Output .mmd file')
+def diagram(kind, input, output):
+    """Generate a Mermaid diagram (.mmd) from findings JSON"""
+    from defihunter.core.diagrams import attack_flow, call_graph, storage_layout
+    findings = json.loads(Path(input).read_text())
+    vulns = findings.get("vulnerabilities", [])
+    target = findings.get("target", "target")
+    contracts = findings.get("contracts", {})
+
+    if kind == "attack_flow":
+        mmd = attack_flow(vulns, target)
+    elif kind == "call_graph":
+        mmd = call_graph(contracts, vulns, target)
+    else:
+        mmd = storage_layout(
+            [c.get("source", "") for c in contracts.values()
+             if isinstance(c, dict) and c.get("source")], target)
+
+    if not mmd:
+        ui.warn("No diagram content generated (no data to render)")
+        return
+    Path(output).write_text(mmd, encoding="utf-8")
+    ui.ok(f"Diagram saved to {output}")
+
+
+@cli.command()
+@click.option('--input', '-i', required=True, help='Findings JSON')
+@click.option('--output', '-o', required=True, help='Output .sarif file')
+@click.option('--repo-uri', default=None, help='Base URI for source artifacts')
+def sarif(input, output, repo_uri):
+    """Export findings as SARIF 2.1.0 (CodeQL/GHAS compatible)"""
+    from defihunter.core.sarif import export_sarif
+    findings = json.loads(Path(input).read_text())
+    vulns = findings.get("vulnerabilities", [])
+    ui.rule("SARIF EXPORT")
+    with ui.spinner(f"Exporting {len(vulns)} finding(s) → SARIF"):
+        export_sarif(vulns, output,
+                     tool_version=findings.get("tool_version", "unknown"),
+                     target=findings.get("target", "target"),
+                     repo_uri=repo_uri)
+    ui.ok(f"SARIF log saved to {output}")
+
+
+@cli.command()
+@click.option('--input', '-i', required=True, help='Findings JSON')
+@click.option('--target', '-t', type=click.Choice(['github', 'jira']), required=True,
+              help='Where to push findings')
+@click.option('--repo', default=None, help='GitHub repo (owner/name)')
+@click.option('--project', default=None, help='Jira project key')
+@click.option('--floor', default='MEDIUM', help='Minimum severity to sync')
+@click.option('--dry-run', is_flag=True, help='Print tickets instead of creating')
+def sync(input, target, repo, project, floor, dry_run):
+    """Push findings to GitHub Issues or Jira"""
+    from defihunter.core.sync import sync_github, sync_jira
+    findings = json.loads(Path(input).read_text())
+    vulns = findings.get("vulnerabilities", [])
+    ui.rule("ISSUE SYNC")
+
+    if target == "github":
+        if not repo:
+            ui.warn("--repo owner/name required")
+            return
+        owner, name = repo.split("/", 1)
+        with ui.spinner(f"Syncing {len(vulns)} finding(s) → GitHub"):
+            res = sync_github(vulns, owner, name, floor=floor, dry_run=dry_run)
+    else:
+        if not project:
+            ui.warn("--project KEY required")
+            return
+        base = os.getenv("JIRA_BASE_URL", "")
+        if not base:
+            ui.warn("JIRA_BASE_URL env var required")
+            return
+        with ui.spinner(f"Syncing {len(vulns)} finding(s) → Jira"):
+            res = sync_jira(vulns, base, project, floor=floor, dry_run=dry_run)
+
+    created = res.get("created", [])
+    if dry_run:
+        ui.info(f"DRY-RUN: {len(created)} ticket(s) would be created")
+        for c in created[:5]:
+            ui.console.print(f"  - {c.get('title', c.get('summary', '?'))}")
+    else:
+        ui.ok(f"Created {len(created)} ticket(s), skipped {res.get('skipped', 0)}")
+        for c in created[:5]:
+            ui.console.print(f"  - {c.get('url') or c.get('key')}")
 
 
 if __name__ == '__main__':

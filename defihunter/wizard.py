@@ -265,6 +265,29 @@ def _run_static(scan: Dict, contracts: Dict[str, Dict], rpc: Optional[str] = Non
     if local and local.is_dir():
         with ui.spinner(f"Analyzing Solidity source in {repo_dir}"):
             findings = analyze_repo_dir(str(local), repo_label=scan.get("repo_url", repo_dir))
+        # Advanced scanners (governance / oracle / upgradability / cross-chain)
+        try:
+            from defihunter.core.scanners import scan_repo_dir
+            scanner_hits = scan_repo_dir(str(local), repo_label=scan.get("repo_url", repo_dir))
+            findings.extend(scanner_hits)
+            if scanner_hits:
+                ui.info(f"Advanced scanners: {len(scanner_hits)} pattern hit(s)")
+        except Exception:
+            pass
+        # Slither (90+ detectors) — graceful when not installed
+        slither_hits: List[Dict] = []
+        try:
+            from defihunter.core.slither import run_slither, merge_slither_findings, slither_available
+            if slither_available():
+                with ui.spinner("Running Slither (90+ detectors)"):
+                    slither_hits = run_slither(str(local), timeout=150)
+                findings = merge_slither_findings(findings, slither_hits)
+                if slither_hits:
+                    ui.info(f"Slither: {len(slither_hits)} detector hit(s) merged")
+        except Exception:
+            pass
+        findings.sort(key=lambda f: {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2,
+                                     "LOW": 3, "INFO": 4}.get(f["severity"], 99))
         ui.info(f"Analyzed {len({f['file'] for f in findings})} source file(s) "
                 f"({len(findings)} hit(s))")
         scan["_analysis_status"] = "findings" if findings else "clean"
@@ -1030,7 +1053,9 @@ def _write_report(scan: Dict, findings: List[Dict], sim_results: List[Dict],
         return
 
     try:
-        ReportGenerator().generate(payload, format=fmt, output=str(report_path))
+        diagrams = ["attack_flow", "call_graph"] if fmt in ("html", "markdown") else None
+        ReportGenerator().generate(payload, format=fmt, output=str(report_path),
+                                   diagrams=diagrams)
         ui.ok(f"Report saved: {report_path}")
     except Exception as e:
         ui.warn(f"Report generation failed ({e}) — JSON kept at {json_path}")

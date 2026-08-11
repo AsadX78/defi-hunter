@@ -200,8 +200,12 @@ def analyze_file(path: Path) -> List[Dict]:
     return findings
 
 
-def analyze_repo_dir(repo_dir: str, repo_label: str = "") -> List[Dict]:
+def analyze_repo_dir(repo_dir: str, repo_label: str = "", use_slither: bool = True) -> List[Dict]:
     """Scan every protocol-owned .sol file in a cloned repo.
+
+    Runs our line-aware engine, then (optionally) Slither for the full
+    90+ detector set. Slither findings are merged in and severity is
+    bumped when both engines flag the same attack type in the same file.
 
     Returns findings sorted by severity (CRITICAL first), each with file:line
     evidence and an attack tag chained to the wizard's attack menu.
@@ -218,6 +222,26 @@ def analyze_repo_dir(repo_dir: str, repo_label: str = "") -> List[Dict]:
         if repo_label:
             f["repo"] = repo_label
     return sorted(findings, key=lambda f: SEVERITY_ORDER.get(f["severity"], 99))
+
+
+def analyze_repo_with_slither(repo_dir: str, repo_label: str = "", timeout: int = 120) -> Dict:
+    """Combined repo analysis: line-aware engine + Slither detectors.
+
+    Returns a dict {"findings": [...], "slither": [...], "slither_ran": bool}
+    so callers (wizard, CLI) can show which engine produced what.
+    """
+    findings = analyze_repo_dir(repo_dir, repo_label=repo_label, use_slither=False)
+    slither_hits: List[Dict] = []
+    slither_ran = False
+    try:
+        from defihunter.core.slither import run_slither, merge_slither_findings, slither_available
+        if slither_available():
+            slither_ran = True
+            slither_hits = run_slither(repo_dir, timeout=timeout)
+            findings = merge_slither_findings(findings, slither_hits)
+    except Exception:
+        slither_ran = False
+    return {"findings": findings, "slither": slither_hits, "slither_ran": slither_ran}
 
 class ContractAnalyzer:
     def __init__(self, rpc_url: Optional[str] = None):
