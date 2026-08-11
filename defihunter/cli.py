@@ -1098,5 +1098,305 @@ def templates_verify(lab_dir):
     ui.ok("All template exploits verified")
 
 
+# ---------------------------------------------------------------------------
+# Sentinel commands
+# ---------------------------------------------------------------------------
+
+@cli.group()
+def sentinel():
+    """Sentinel -- continuous DeFi protocol monitoring and threat detection."""
+    pass
+
+
+@sentinel.command("add")
+@click.option('--name', '-n', required=True, help='Protocol name')
+@click.option('--chain', '-c', default='ethereum', help='Chain')
+@click.option('--address', '-a', multiple=True, help='Contract address (can repeat)')
+@click.option('--website', '-w', default=None, help='Protocol website')
+def sentinel_add(name, chain, address, website):
+    """Add a protocol to the Sentinel monitoring list."""
+    from defihunter.sentinel.database import SentinelDB
+
+    db = SentinelDB()
+    db.connect()
+
+    pid = db.add_protocol(
+        name=name,
+        chain=chain,
+        addresses=list(address),
+        website=website,
+    )
+    db.close()
+
+    ui.ok(f"Added {name} ({chain}) to Sentinel monitoring (id={pid})")
+    ui.info(f"Run: defihunter sentinel scan --name {name}")
+
+
+@sentinel.command("list")
+def sentinel_list():
+    """List all monitored protocols."""
+    from defihunter.sentinel.database import SentinelDB
+    from rich.table import Table as RichTable
+
+    db = SentinelDB()
+    db.connect()
+    protocols = db.list_protocols()
+    db.close()
+
+    if not protocols:
+        ui.info("No protocols monitored. Add one with: defihunter sentinel add -n <name>")
+        return
+
+    table = RichTable(title="Monitored Protocols", box=box.SIMPLE_HEAVY,
+                      border_style="green", header_style="bold green")
+    table.add_column("#", style="muted", justify="right")
+    table.add_column("Name", style="bold white")
+    table.add_column("Chain", style="accent")
+    table.add_column("Addresses", style="addr")
+    table.add_column("Last Scan", style="muted")
+    table.add_column("Status", style="bold")
+
+    for i, p in enumerate(protocols, 1):
+        addrs = json.loads(p.get("addresses", "[]"))
+        last_scan = p.get("last_scan")
+        if last_scan:
+            import time as _t
+            age = _t.time() - last_scan
+            if age < 3600:
+                scan_str = f"{int(age / 60)}m ago"
+            elif age < 86400:
+                scan_str = f"{int(age / 3600)}h ago"
+            else:
+                scan_str = f"{int(age / 86400)}d ago"
+        else:
+            scan_str = "never"
+
+        table.add_row(
+            str(i),
+            p["name"],
+            p.get("chain", "ethereum"),
+            ", ".join(a[:10] + "..." for a in addrs[:3]) + (f" +{len(addrs)-3}" if len(addrs) > 3 else ""),
+            scan_str,
+            p.get("status", "active"),
+        )
+
+    ui.console.print(table)
+
+
+@sentinel.command("scan")
+@click.option('--name', '-n', required=True, help='Protocol name to scan')
+@click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL')
+def sentinel_scan(name, rpc):
+    """Immediately scan a protocol."""
+    from defihunter.sentinel.database import SentinelDB
+
+    db = SentinelDB()
+    db.connect()
+
+    protocol = db.get_protocol_by_name(name)
+    if not protocol:
+        db.close()
+        ui.error(f"Protocol '{name}' not found. Add it first: defihunter sentinel add -n {name}")
+        return
+
+    db.close()
+
+    from defihunter.sentinel.service import SentinelService
+    service = SentinelService(rpc_url=rpc)
+    result = service.scan_now(protocol["id"])
+
+    if result:
+        score = result.get("score", 0)
+        findings = result.get("findings_count", 0)
+        verdict = result.get("verdict", "UNKNOWN")
+        ui.console.print()
+        ui.console.print(ui.summary_panel([
+            ("protocol", name),
+            ("score", f"{score:.0f}/100"),
+            ("verdict", verdict),
+            ("findings", str(findings)),
+            ("critical", str(result.get("critical", 0))),
+            ("high", str(result.get("high", 0))),
+            ("medium", str(result.get("medium", 0))),
+            ("low", str(result.get("low", 0))),
+        ], title="Scan Result"))
+    else:
+        ui.warn("Scan completed but no results recorded.")
+
+
+@sentinel.command("status")
+def sentinel_status():
+    """Show Sentinel monitoring status and statistics."""
+    from defihunter.sentinel.database import SentinelDB
+    import time as _t
+
+    db = SentinelDB()
+    db.connect()
+    stats = db.get_stats()
+    protocols = db.list_protocols()
+    recent_alerts = db.get_alert_history(limit=5)
+    db.close()
+
+    ui.console.print()
+    ui.console.print(ui.summary_panel([
+        ("monitored protocols", str(stats["protocols"])),
+        ("total scans", str(stats["total_scans"])),
+        ("total findings", str(stats["total_findings"])),
+        ("pending alerts", str(stats["pending_alerts"])),
+        ("CRITICAL findings", str(stats["critical_total"])),
+        ("HIGH findings", str(stats["high_total"])),
+        ("MEDIUM findings", str(stats["medium_total"])),
+    ], title="Sentinel Status"))
+
+    if recent_alerts:
+        ui.console.print()
+        ui.info("Recent alerts:")
+        for a in recent_alerts:
+            sent = a.get("sent_at")
+            if sent:
+                age = _t.time() - sent
+                if age < 3600:
+                    age_str = f"{int(age / 60)}m ago"
+                else:
+                    age_str = f"{int(age / 3600)}h ago"
+            else:
+                age_str = "pending"
+            sev = a.get("severity", "?")
+            proto = a.get("protocol_name", "?")
+            msg = a.get("message", "")[:60]
+            ui.console.print(f"  [{sev}] {proto} -- {msg} ({age_str})")
+
+
+@sentinel.command("start")
+@click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL')
+@click.option('--scan-interval', '-s', default=3600, help='Re-scan interval in seconds')
+@click.option('--watch-interval', '-w', default=300, help='Deployment check interval in seconds')
+@click.option('--telegram-token', default=None, help='Telegram bot token')
+@click.option('--telegram-chat', default=None, help='Telegram chat ID')
+@click.option('--discord-webhook', default=None, help='Discord webhook URL')
+def sentinel_start(rpc, scan_interval, watch_interval, telegram_token, telegram_chat, discord_webhook):
+    """Start the Sentinel monitoring daemon.
+
+    Runs continuously, watching for new deployments and protocol changes.
+    """
+    from defihunter.sentinel.service import SentinelService
+    from defihunter.sentinel.alerts import TelegramAlert, DiscordAlert
+
+    service = SentinelService(
+        rpc_url=rpc,
+        scan_interval=scan_interval,
+        watch_interval=watch_interval,
+    )
+
+    # Configure alert channels
+    if telegram_token and telegram_chat:
+        service.alerts.add_channel(TelegramAlert(telegram_token, telegram_chat))
+        ui.ok("Telegram alerts configured")
+    if discord_webhook:
+        service.alerts.add_channel(DiscordAlert(discord_webhook))
+        ui.ok("Discord alerts configured")
+
+    ui.rule("SENTINEL STARTED")
+    ui.info("Press Ctrl+C to stop")
+
+    try:
+        service.start()
+    except KeyboardInterrupt:
+        service.stop()
+        ui.ok("Sentinel stopped.")
+
+
+@sentinel.command("history")
+@click.option('--name', '-n', required=True, help='Protocol name')
+@click.option('--limit', '-l', default=10, help='Number of scans to show')
+def sentinel_history(name, limit):
+    """Show scan history for a protocol."""
+    from defihunter.sentinel.database import SentinelDB
+    from rich.table import Table as RichTable
+    import time as _t
+
+    db = SentinelDB()
+    db.connect()
+    protocol = db.get_protocol_by_name(name)
+    if not protocol:
+        db.close()
+        ui.error(f"Protocol '{name}' not found.")
+        return
+
+    history = db.get_scan_history(protocol["id"], limit=limit)
+    db.close()
+
+    if not history:
+        ui.info(f"No scan history for {name}.")
+        return
+
+    table = RichTable(title=f"Scan History: {name}", box=box.SIMPLE_HEAVY,
+                      border_style="green", header_style="bold green")
+    table.add_column("Date", style="muted")
+    table.add_column("Score", style="bold")
+    table.add_column("Verdict", style="bold")
+    table.add_column("Findings", justify="right")
+    table.add_column("CRIT", justify="right", style="red")
+    table.add_column("HIGH", justify="right", style="red")
+    table.add_column("MED", justify="right", style="yellow")
+    table.add_column("LOW", justify="right", style="green")
+    table.add_column("Duration", justify="right", style="muted")
+
+    for s in history:
+        ts = s.get("timestamp", 0)
+        date_str = _t.strftime("%Y-%m-%d %H:%M", _t.localtime(ts))
+        score = s.get("score", 0)
+        score_style = "green" if score >= 80 else "yellow" if score >= 50 else "red"
+        table.add_row(
+            date_str,
+            Text(f"{score:.0f}", style=score_style),
+            s.get("verdict", "?"),
+            str(s.get("findings_count", 0)),
+            str(s.get("critical", 0)),
+            str(s.get("high", 0)),
+            str(s.get("medium", 0)),
+            str(s.get("low", 0)),
+            f"{s.get('duration_s', 0):.1f}s",
+        )
+
+    ui.console.print(table)
+
+
+@sentinel.command("threats")
+@click.option('--limit', '-l', default=10, help='Number of threats to show')
+def sentinel_threats(limit):
+    """Show recent threat intelligence."""
+    from defihunter.sentinel.database import SentinelDB
+    from rich.table import Table as RichTable
+
+    db = SentinelDB()
+    db.connect()
+    threats = db.get_recent_threats(limit=limit)
+    db.close()
+
+    if not threats:
+        ui.info("No threat intelligence yet.")
+        return
+
+    table = RichTable(title="Threat Intelligence", box=box.SIMPLE_HEAVY,
+                      border_style="red", header_style="bold red")
+    table.add_column("Type", style="bold white")
+    table.add_column("Chain", style="accent")
+    table.add_column("Loss", style="red")
+    table.add_column("Source", style="muted")
+    table.add_column("Pattern", overflow="fold", max_width=50)
+
+    for t in threats:
+        table.add_row(
+            t.get("attack_type", "?"),
+            t.get("chain", "?"),
+            t.get("loss_amount", "?"),
+            t.get("source", "?"),
+            t.get("pattern", "")[:50],
+        )
+
+    ui.console.print(table)
+
+
 if __name__ == '__main__':
     cli()

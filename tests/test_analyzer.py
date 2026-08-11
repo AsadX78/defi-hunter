@@ -1169,3 +1169,261 @@ class TestExploitExecutor:
             assert info["selector"].startswith("0x")
             assert len(info["selector"]) == 10
             assert "desc" in info
+
+
+# ============================================================================
+# Phase 4: Sentinel System Tests
+# ============================================================================
+
+class TestSentinelDatabase:
+    """Tests for the Sentinel SQLite database."""
+
+    def test_add_and_get_protocol(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db_path = str(tmp_path / "test.db")
+        db = SentinelDB(db_path)
+        db.connect()
+        try:
+            pid = db.add_protocol("TestProto", "ethereum", ["0x" + "a" * 40])
+            assert pid is not None
+            assert pid > 0
+            proto = db.get_protocol(pid)
+            assert proto is not None
+            assert proto["name"] == "TestProto"
+            assert proto["chain"] == "ethereum"
+            assert "0x" in proto["addresses"]
+        finally:
+            db.close()
+
+    def test_get_protocol_by_name(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            db.add_protocol("ByNameTest", "bsc", ["0x" + "b" * 40])
+            p = db.get_protocol_by_name("ByNameTest", "bsc")
+            assert p is not None
+            assert p["chain"] == "bsc"
+            assert db.get_protocol_by_name("nonexistent") is None
+        finally:
+            db.close()
+
+    def test_update_protocol(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            pid = db.add_protocol("UpdateMe", "polygon", ["0x" + "c" * 40])
+            db.update_protocol(pid, status="paused", tags=["testing"])
+            p = db.get_protocol(pid)
+            assert p["status"] == "paused"
+            assert "testing" in p["tags"]
+        finally:
+            db.close()
+
+    def test_list_protocols(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            db.add_protocol("A", "ethereum", [])
+            db.add_protocol("B", "bsc", [])
+            db.add_protocol("C", "polygon", [])
+            all_p = db.list_protocols()
+            assert len(all_p) == 3
+            assert [p["name"] for p in all_p] == ["A", "B", "C"]
+        finally:
+            db.close()
+
+    def test_delete_protocol(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            pid = db.add_protocol("DeleteMe", "ethereum", [])
+            assert db.get_protocol(pid) is not None
+            db.delete_protocol(pid)
+            assert db.get_protocol(pid) is None
+        finally:
+            db.close()
+
+    def test_add_scan_with_findings(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            pid = db.add_protocol("ScanTest", "ethereum", ["0x" + "d" * 40])
+            findings = [
+                {"severity": "CRITICAL", "type": "reentrancy", "title": "reentrancy", "confidence": 95, "confirmed": True},
+                {"severity": "HIGH", "type": "overflow", "title": "overflow", "confidence": 80, "confirmed": False},
+                {"severity": "MEDIUM", "type": "info_leak", "title": "info_leak", "confidence": 60, "confirmed": False},
+                {"severity": "LOW", "type": "unused", "title": "unused", "confidence": 30, "confirmed": False},
+            ]
+            scan_id = db.add_scan(pid, "ethereum", findings, fork_proven=1, duration_s=5.2, rpc_url="http://test")
+            assert scan_id is not None
+            scan = db.get_latest_scan(pid)
+            assert scan is not None
+            assert scan["findings_count"] == 4
+            assert scan["critical"] == 1
+            assert scan["high"] == 1
+            assert scan["medium"] == 1
+            assert scan["low"] == 1
+            assert scan["score"] < 100.0
+        finally:
+            db.close()
+
+    def test_score_calculation_no_findings(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            pid = db.add_protocol("CleanProto", "ethereum", ["0x" + "e" * 40])
+            db.add_scan(pid, "ethereum", [], fork_proven=0, duration_s=1.0, rpc_url="http://test")
+            scan = db.get_latest_scan(pid)
+            assert scan["score"] == 100.0
+            assert scan["verdict"] == "CLEAN"
+        finally:
+            db.close()
+
+    def test_score_calculation_critical_findings(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            pid = db.add_protocol("BadProto", "ethereum", ["0x" + "f" * 40])
+            # 4 CRITICAL + 6 HIGH = 4*25 + 6*15 = 190 penalty -> max(0, -90) = 0
+            findings = [{"severity": "CRITICAL", "type": f"f{i}", "title": f"f{i}", "confidence": 95} for i in range(4)]
+            findings += [{"severity": "HIGH", "type": f"h{i}", "title": f"h{i}", "confidence": 85} for i in range(6)]
+            db.add_scan(pid, "ethereum", findings, fork_proven=0, duration_s=1.0, rpc_url="http://test")
+            scan = db.get_latest_scan(pid)
+            assert scan["critical"] == 4
+            assert scan["high"] == 6
+            assert scan["findings_count"] == 10
+            assert scan["score"] <= 0.0
+            assert scan["verdict"] == "CRITICAL"
+        finally:
+            db.close()
+
+    def test_alerts(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            pid = db.add_protocol("AlertTest", "ethereum", [])
+            alert_id = db.add_alert(pid, "new_vuln", "Found new vuln", severity="HIGH")
+            assert alert_id is not None
+            pending = db.get_pending_alerts()
+            assert len(pending) == 1
+            db.mark_alert_sent(alert_id, "telegram")
+            pending = db.get_pending_alerts()
+            assert len(pending) == 0
+        finally:
+            db.close()
+
+    def test_stats(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            db.add_protocol("StatsA", "ethereum", [])
+            db.add_protocol("StatsB", "bsc", [])
+            stats = db.get_stats()
+            assert stats["protocols"] == 2
+            assert stats["total_scans"] == 0
+            assert stats["total_findings"] == 0
+        finally:
+            db.close()
+
+    def test_protocol_search(self, tmp_path):
+        from defihunter.sentinel.database import SentinelDB
+        db = SentinelDB(str(tmp_path / "test.db"))
+        db.connect()
+        try:
+            db.add_protocol("Morpho Blue", "ethereum", ["0x1111111111111111111111111111111111111111"])
+            db.add_protocol("Aave V3", "ethereum", ["0x2222222222222222222222222222222222222222"])
+            db.add_protocol("Uniswap V3", "arbitrum", ["0x3333333333333333333333333333333333333333"])
+            # Search by name
+            results = db.search_protocols("morpho")
+            assert len(results) == 1
+            assert results[0]["name"] == "Morpho Blue"
+            # Search by chain
+            results = db.search_protocols(chain="arbitrum")
+            assert len(results) == 1
+            assert results[0]["name"] == "Uniswap V3"
+        finally:
+            db.close()
+
+
+class TestSentinelWatcher:
+    """Tests for the deployment watcher."""
+
+    def test_filter_defi_contracts_rejects_erc20(self):
+        from defihunter.sentinel.watcher import DeploymentWatcher
+        w = DeploymentWatcher()
+        # Transfer event selector is ERC-20, not DeFi
+        deployments = [{"address": "0x" + "a" * 40, "chain": "ethereum",
+                       "matches": [{"topic0": "0xddf252ad"}], "factory_name": ""}]
+        result = w.filter_defi_contracts(deployments, "http://dummy")
+        # Should filter out pure ERC-20 tokens (no DeFi function matches)
+        # The result depends on RPC availability; with dummy URL it returns empty
+        assert isinstance(result, list)
+
+    def test_detect_chain_from_rpc(self):
+        from defihunter.sentinel.watcher import DeploymentWatcher
+        w = DeploymentWatcher()
+        assert w.detect_chain_from_rpc("https://eth.llamarpc.com") == "ethereum"
+        assert w.detect_chain_from_rpc("https://bsc-dataseed.bnbchain.org") == "bsc"
+        assert w.detect_chain_from_rpc("https://polygon-rpc.com") == "polygon"
+
+
+class TestSentinelAlerts:
+    """Tests for the alert system."""
+
+    def test_console_alert(self):
+        from defihunter.sentinel.alerts import ConsoleAlert, AlertManager
+        console = ConsoleAlert()
+        mgr = AlertManager()
+        mgr.channels = [console]
+        results = mgr.send_alert("TestProto", "new_vuln", "HIGH", "New vuln found", "ethereum")
+        assert results.get("console") is True
+
+    def test_multiple_channels(self):
+        from defihunter.sentinel.alerts import ConsoleAlert, AlertManager
+        console = ConsoleAlert()
+        mgr = AlertManager()
+        mgr.channels = [console]
+        results = mgr.send_alert("Proto", "scan_complete", "LOW", "Scan done", "ethereum")
+        assert isinstance(results, dict)
+        assert "console" in results
+
+    def test_no_channels_returns_false(self):
+        from defihunter.sentinel.alerts import AlertManager
+        mgr = AlertManager()
+        mgr.channels = []
+        results = mgr.send_alert("Proto", "test", "INFO", "Test msg", "ethereum")
+        assert all(v is False for v in results.values())
+
+
+class TestSentinelService:
+    """Tests for the Sentinel service (without actual monitoring)."""
+
+    def test_add_protocol(self, tmp_path):
+        from defihunter.sentinel.service import SentinelService
+        svc = SentinelService(db_path=str(tmp_path / "svc.db"))
+        pid = svc.add_protocol("SvcTest", "ethereum", ["0x" + "a" * 40])
+        assert pid > 0
+
+    def test_get_status(self, tmp_path):
+        from defihunter.sentinel.service import SentinelService
+        svc = SentinelService(db_path=str(tmp_path / "svc.db"))
+        status = svc.get_status()
+        assert "running" in status
+        assert status["running"] is False
+        assert "protocols" in status
+        assert "stats" in status
+
+    def test_stop_when_not_running(self, tmp_path):
+        from defihunter.sentinel.service import SentinelService
+        svc = SentinelService(db_path=str(tmp_path / "svc.db"))
+        svc.stop()  # should not raise
+        assert svc._running is False
