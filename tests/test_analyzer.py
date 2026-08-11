@@ -1427,3 +1427,90 @@ class TestSentinelService:
         svc = SentinelService(db_path=str(tmp_path / "svc.db"))
         svc.stop()  # should not raise
         assert svc._running is False
+
+
+# ============================================================================
+# Sentinel Scheduler Tests
+# ============================================================================
+
+class TestSentinelScheduler:
+    """Tests for the cron scheduler."""
+
+    def test_cron_matches_every_30_min(self):
+        from defihunter.sentinel.scheduler import CronSchedule
+        from datetime import datetime
+        cron = CronSchedule("*/30 * * * *")
+        assert cron.matches(datetime(2026, 8, 11, 10, 0))
+        assert cron.matches(datetime(2026, 8, 11, 10, 30))
+        assert not cron.matches(datetime(2026, 8, 11, 10, 15))
+
+    def test_cron_matches_specific_hour(self):
+        from defihunter.sentinel.scheduler import CronSchedule
+        from datetime import datetime
+        cron = CronSchedule("0 */6 * * *")
+        assert cron.matches(datetime(2026, 8, 11, 0, 0))
+        assert cron.matches(datetime(2026, 8, 11, 6, 0))
+        assert cron.matches(datetime(2026, 8, 11, 12, 0))
+        assert cron.matches(datetime(2026, 8, 11, 18, 0))
+        assert not cron.matches(datetime(2026, 8, 11, 9, 0))
+
+    def test_cron_matches_weekdays_only(self):
+        from defihunter.sentinel.scheduler import CronSchedule
+        from datetime import datetime
+        # cron 0=Sunday, 1=Monday ... 5=Friday, 6=Saturday
+        cron = CronSchedule("0 9 * * 1-5")
+        # 2026-08-10 is Monday (cron=1), should match
+        assert cron.matches(datetime(2026, 8, 10, 9, 0))
+        # 2026-08-14 is Friday (cron=5), should match
+        assert cron.matches(datetime(2026, 8, 14, 9, 0))
+        # 2026-08-15 is Saturday (cron=6), should NOT match
+        assert not cron.matches(datetime(2026, 8, 15, 9, 0))
+        # 2026-08-16 is Sunday (cron=0), should NOT match
+        assert not cron.matches(datetime(2026, 8, 16, 9, 0))
+
+    def test_cron_next_run(self):
+        from defihunter.sentinel.scheduler import CronSchedule
+        from datetime import datetime
+        cron = CronSchedule("0 */6 * * *")
+        nxt = cron.next_run(datetime(2026, 8, 11, 7, 15))
+        assert nxt.hour == 12
+        assert nxt.minute == 0
+
+    def test_cron_invalid_expr(self):
+        from defihunter.sentinel.scheduler import CronSchedule
+        try:
+            CronSchedule("invalid")
+            assert False, "Should have raised"
+        except ValueError:
+            pass
+
+    def test_interval_schedule(self):
+        from defihunter.sentinel.scheduler import IntervalSchedule
+        sched = IntervalSchedule(60)
+        assert sched.should_run()  # first call always runs
+        assert not sched.should_run()  # too soon
+
+    def test_parse_schedule_cron(self):
+        from defihunter.sentinel.scheduler import parse_schedule, CronSchedule
+        sched = parse_schedule("*/30 * * * *")
+        assert isinstance(sched, CronSchedule)
+
+    def test_parse_schedule_interval(self):
+        from defihunter.sentinel.scheduler import parse_schedule, IntervalSchedule
+        assert isinstance(parse_schedule("every 60s"), IntervalSchedule)
+        assert isinstance(parse_schedule("every 30m"), IntervalSchedule)
+        assert isinstance(parse_schedule("every 1h"), IntervalSchedule)
+        assert isinstance(parse_schedule("every 1d"), IntervalSchedule)
+
+    def test_combined_schedule(self):
+        from defihunter.sentinel.scheduler import CombinedSchedule, IntervalSchedule
+        cs = CombinedSchedule()
+        # No schedules = doesn't run
+        assert not cs.should_run()
+        # Add one that fires immediately
+        sched = IntervalSchedule(0)
+        cs.add(sched)
+        assert cs.should_run()
+        # After marking it run, check it fires again (interval=0 always fires)
+        sched._last_run = 999999999999  # far future
+        assert not cs.should_run()

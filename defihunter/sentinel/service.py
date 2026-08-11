@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from defihunter.sentinel.database import SentinelDB
 from defihunter.sentinel.watcher import DeploymentWatcher
 from defihunter.sentinel.alerts import AlertManager
+from defihunter.sentinel.scheduler import parse_schedule
 
 
 class SentinelService:
@@ -33,8 +34,9 @@ class SentinelService:
         self,
         rpc_url: Optional[str] = None,
         db_path: Optional[str] = None,
-        scan_interval: int = 3600,  # 1 hour
-        watch_interval: int = 300,  # 5 minutes
+        scan_interval: int = 3600,  # 1 hour (legacy, used if no schedule)
+        watch_interval: int = 300,  # 5 minutes (deployment check interval)
+        scan_schedule: Optional[str] = None,  # cron expression for rescanning
     ):
         self.rpc_url = rpc_url
         self.db = SentinelDB(db_path)
@@ -45,6 +47,12 @@ class SentinelService:
         self._running = False
         self._last_scan: Dict[int, float] = {}
 
+        # Cron-based scheduling
+        self._cron = None
+        if scan_schedule:
+            self._cron = parse_schedule(scan_schedule)
+            print(f"[SENTINEL] Cron schedule: {scan_schedule} -> {self._cron}")
+
     def start(self) -> None:
         """Start the monitoring loop (blocks)."""
         self._running = True
@@ -52,8 +60,11 @@ class SentinelService:
 
         print("[SENTINEL] Starting monitoring service...")
         print(f"[SENTINEL] RPC: {self.rpc_url or 'default'}")
-        print(f"[SENTINEL] Scan interval: {self.scan_interval}s")
         print(f"[SENTINEL] Watch interval: {self.watch_interval}s")
+        if self._cron:
+            print(f"[SENTINEL] Scan cron: {self._cron.expr}")
+        else:
+            print(f"[SENTINEL] Scan interval: {self.scan_interval}s")
 
         protocols = self.db.list_protocols()
         print(f"[SENTINEL] Monitoring {len(protocols)} protocol(s)")
@@ -150,9 +161,18 @@ class SentinelService:
         self._scan_protocol(protocol_id)
 
     def _check_rescan(self) -> None:
-        """Re-scan protocols that are due for re-scanning."""
+        """Re-scan protocols that are due for re-scanning.
+
+        Uses cron schedule if configured, otherwise uses interval.
+        """
         now = time.time()
         protocols = self.db.list_protocols()
+
+        # If cron is set, check if cron fires this tick
+        if self._cron:
+            from datetime import datetime
+            if not self._cron.matches(datetime.now()):
+                return  # cron doesn't fire this minute
 
         for p in protocols:
             pid = p["id"]
@@ -162,7 +182,7 @@ class SentinelService:
             # Auto-detected protocols get scanned less frequently
             tags = json.loads(p.get("tags", "[]"))
             if "auto-detected" in tags:
-                interval *= 3  # 3x longer interval
+                interval *= 3
 
             if now - last_scan >= interval:
                 self._scan_protocol(pid)

@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="defi-hunter",
-    version="1.4.0",
+    version="1.5.0",
     author="DeFi Hunter Community",
     description="Open Source DeFi Security Analysis Toolkit",
     long_description=long_description,
@@ -42,6 +42,11 @@ setup(
         ],
         "reports": [
             "jinja2>=3.0",
+            "xhtml2pdf>=0.2.11",
+        ],
+        "all": [
+            "jinja2>=3.0",
+            "xhtml2pdf>=0.2.11",
         ],
     },
     entry_points={

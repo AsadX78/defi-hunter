@@ -7,5 +7,7 @@ from defihunter.sentinel.database import SentinelDB
 from defihunter.sentinel.watcher import DeploymentWatcher
 from defihunter.sentinel.alerts import AlertManager
 from defihunter.sentinel.service import SentinelService
+from defihunter.sentinel.scheduler import CronSchedule, IntervalSchedule, parse_schedule
 
-__all__ = ["SentinelDB", "DeploymentWatcher", "AlertManager", "SentinelService"]
+__all__ = ["SentinelDB", "DeploymentWatcher", "AlertManager", "SentinelService",
+           "CronSchedule", "IntervalSchedule", "parse_schedule"]

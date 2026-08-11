@@ -310,7 +310,12 @@ def repo(ctx, target, rpc, as_json, no_fork):
               default='high', show_default=True,
               help='Exit code threshold: none=never fail, high=fail on any '
                    'CONFIRMED high/critical, critical=fail only on CONFIRMED critical')
-def scan(target, rpc, chain, output, format, no_fork, fail_on, attacker, profit_wallet):
+@click.option('--full-scan', is_flag=True,
+              help='Full pipeline: static -> fork -> exploit generation -> report')
+@click.option('--exploit-output', default='./exploit',
+              help='Output directory for exploit scripts (used with --full-scan)')
+def scan(target, rpc, chain, output, format, no_fork, fail_on, attacker, profit_wallet,
+         full_scan, exploit_output):
     """CI-friendly one-shot scan: static analysis + ABI-aware fork proof.
 
     Every finding gets a verdict after fork verification:
@@ -444,6 +449,43 @@ def scan(target, rpc, chain, output, format, no_fork, fail_on, attacker, profit_
             ui.warn(f"{len(bad)} CONFIRMED {threshold}+ fork-proof(s) — "
                     f"exit code 1 (--fail-on={fail_on})")
             raise SystemExit(1)
+
+    # 5) full-scan pipeline: generate exploits + final report
+    if full_scan and confirmed:
+        from defihunter.core.exploit_generator import ExploitGenerator
+
+        ui.rule("FULL SCAN -- EXPLOIT GENERATION")
+        gen = ExploitGenerator(output_dir=exploit_output)
+        exploits_generated = 0
+
+        for proof in confirmed:
+            src = proof.get("source_finding") or {}
+            attack = src.get("attack") or src.get("type", "")
+            if not attack:
+                continue
+            try:
+                result = gen.generate(attack, target)
+                if result and result.get("contracts"):
+                    exploits_generated += 1
+                    ui.ok(f"Generated exploit for {attack}")
+            except Exception as e:
+                ui.warn(f"Could not generate exploit for {attack}: {e}")
+
+        ui.step("Exploits generated", str(exploits_generated))
+
+        # Final consolidated report
+        report["exploit_scripts"] = exploits_generated
+        report["exploit_dir"] = str(Path(exploit_output).resolve())
+        Path(output).write_text(json.dumps(report, indent=2))
+
+        # Generate final professional report
+        final_format = format if format != "json" else "html"
+        from defihunter.core.reporter import ReportGenerator
+        final_gen = ReportGenerator()
+        final_file = output.rsplit(".", 1)[0] + ("." + final_format if final_format != "markdown" else ".md")
+        final_gen.generate(report, format=final_format, output=final_file)
+        ui.ok(f"Final report: {final_file}")
+
     ui.ok(f"Scan complete: {len(confirmed)} confirmed, {len(refuted)} refuted "
           f"— exit 0")
 
@@ -1271,15 +1313,24 @@ def sentinel_status():
 
 @sentinel.command("start")
 @click.option('--rpc', '-r', envvar='RPC_URL', help='RPC URL')
-@click.option('--scan-interval', '-s', default=3600, help='Re-scan interval in seconds')
+@click.option('--scan-interval', '-s', default=3600, help='Re-scan interval in seconds (ignored if --cron set)')
 @click.option('--watch-interval', '-w', default=300, help='Deployment check interval in seconds')
+@click.option('--cron', default=None,
+              help='Cron expression for scan scheduling (e.g. "*/30 * * * *" = every 30 min, '
+                   '"0 */6 * * *" = every 6 hours). Overrides --scan-interval.')
 @click.option('--telegram-token', default=None, help='Telegram bot token')
 @click.option('--telegram-chat', default=None, help='Telegram chat ID')
 @click.option('--discord-webhook', default=None, help='Discord webhook URL')
-def sentinel_start(rpc, scan_interval, watch_interval, telegram_token, telegram_chat, discord_webhook):
+def sentinel_start(rpc, scan_interval, watch_interval, cron, telegram_token, telegram_chat, discord_webhook):
     """Start the Sentinel monitoring daemon.
 
     Runs continuously, watching for new deployments and protocol changes.
+
+    Scheduling:
+      --cron "*/30 * * * *"   scan every 30 minutes
+      --cron "0 */6 * * *"    scan every 6 hours (recommended)
+      --cron "0 9 * * 1-5"    scan at 9am on weekdays
+      --scan-interval 3600    fallback: scan every N seconds
     """
     from defihunter.sentinel.service import SentinelService
     from defihunter.sentinel.alerts import TelegramAlert, DiscordAlert
@@ -1288,6 +1339,7 @@ def sentinel_start(rpc, scan_interval, watch_interval, telegram_token, telegram_
         rpc_url=rpc,
         scan_interval=scan_interval,
         watch_interval=watch_interval,
+        scan_schedule=cron,
     )
 
     # Configure alert channels
