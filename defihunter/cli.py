@@ -773,6 +773,7 @@ def exploit(target, attack, rpc, output, all_attacks, execute, attacker, token):
       - .env -- environment variables
     """
     from defihunter.core.exploit_generator import ExploitGenerator
+    from rich import box
 
     if not all_attacks and not attack:
         raise click.UsageError("Either --attack or --all is required")
@@ -1137,6 +1138,7 @@ def sentinel_list():
     """List all monitored protocols."""
     from defihunter.sentinel.database import SentinelDB
     from rich.table import Table as RichTable
+    from rich import box
 
     db = SentinelDB()
     db.connect()
@@ -1313,6 +1315,8 @@ def sentinel_history(name, limit):
     """Show scan history for a protocol."""
     from defihunter.sentinel.database import SentinelDB
     from rich.table import Table as RichTable
+    from rich import box
+    from rich.text import Text
     import time as _t
 
     db = SentinelDB()
@@ -1368,6 +1372,7 @@ def sentinel_threats(limit):
     """Show recent threat intelligence."""
     from defihunter.sentinel.database import SentinelDB
     from rich.table import Table as RichTable
+    from rich import box
 
     db = SentinelDB()
     db.connect()
