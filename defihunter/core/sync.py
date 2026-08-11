@@ -32,7 +32,7 @@ def _request(url: str, payload: Dict, token: str, extra_headers: Optional[Dict] 
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "defi-hunter/1.5",
+        "User-Agent": "defi-hunter/1.6",
     }
     if extra_headers:
         headers.update(extra_headers)
